@@ -946,30 +946,65 @@ export default function MealModal({
                   <strong className="text-teal-700">Lưu &amp; Chốt luôn</strong> không cần ràng buộc phức tạp.
                 </div>
               ) : (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-2">
                   {attachments.map((att) => (
                     <div
                       key={att.id}
-                      className="px-2 py-1 rounded-lg bg-white border border-slate-200 flex items-center gap-1.5 text-[11px]"
+                      className="rounded-xl bg-white border border-slate-200 overflow-hidden shadow-2xs group hover:border-teal-400 transition"
                     >
-                      <button
-                        type="button"
+                      {/* Khung hiển thị trực tiếp ảnh chuyển khoản rõ nét */}
+                      <div
                         onClick={() => setPreviewAttachment(att)}
-                        className="font-semibold text-teal-700 hover:underline truncate max-w-[160px]"
+                        className="relative h-52 bg-slate-900/5 flex items-center justify-center cursor-zoom-in overflow-hidden border-b border-slate-100"
+                        title="Bấm vào ảnh để phóng to toàn màn hình"
                       >
-                        [{att.type === 'PAYMENT_PROOF' ? 'Ảnh CK' : 'HĐ'}] {att.filename}
-                      </button>
-                      {!isReadOnly && (
+                        {att.dataUrl ? (
+                          <img
+                            src={att.dataUrl}
+                            alt={att.filename}
+                            className="w-full h-full object-contain p-1 group-hover:scale-[1.02] transition-transform duration-200"
+                          />
+                        ) : (
+                          <div className="text-slate-400 text-xs flex items-center gap-1.5">
+                            <ImageIcon className="w-4 h-4" /> Không có dữ liệu ảnh
+                          </div>
+                        )}
+                        <span
+                          className={`absolute top-2 left-2 px-2 py-0.5 rounded-md text-[10px] font-extrabold shadow-xs ${
+                            att.type === 'PAYMENT_PROOF'
+                              ? 'bg-teal-600 text-white'
+                              : 'bg-indigo-600 text-white'
+                          }`}
+                        >
+                          {att.type === 'PAYMENT_PROOF' ? 'Ảnh Chuyển khoản' : 'Hóa đơn / Bill'}
+                        </span>
+                        <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded-md bg-slate-900/75 text-white text-[10px] font-bold opacity-90 group-hover:bg-teal-700 transition">
+                          🔍 Bấm phóng to
+                        </span>
+                      </div>
+
+                      {/* Thanh thông tin & thao tác dưới chân ảnh */}
+                      <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 text-[11px] bg-white">
                         <button
                           type="button"
-                          onClick={() =>
-                            setAttachments((prev) => prev.filter((x) => x.id !== att.id))
-                          }
-                          className="text-slate-400 hover:text-red-600"
+                          onClick={() => setPreviewAttachment(att)}
+                          className="font-bold text-slate-800 hover:text-teal-700 truncate text-left"
                         >
-                          <X className="w-3 h-3" />
+                          {att.filename}
                         </button>
-                      )}
+                        {!isReadOnly && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAttachments((prev) => prev.filter((x) => x.id !== att.id))
+                            }
+                            className="px-1.5 py-0.5 rounded bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-[10px] shrink-0 flex items-center gap-0.5"
+                            title="Xóa ảnh này"
+                          >
+                            <Trash2 className="w-3 h-3" /> Xóa
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

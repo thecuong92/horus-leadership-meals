@@ -174,6 +174,8 @@ export default function HorusMealsApp() {
     useState<MemberReportRow | null>(null);
   const [isCommitModalOpen, setIsCommitModalOpen] = useState<boolean>(false);
   const [isTestingModalOpen, setIsTestingModalOpen] = useState<boolean>(false);
+  const [previewLightboxAtt, setPreviewLightboxAtt] =
+    useState<MealAttachment | null>(null);
 
   const currentUserName = ROLE_CONFIG[role].userName;
 
@@ -850,16 +852,45 @@ export default function HorusMealsApp() {
                         {formatVnd(meal.totalPaidVnd)}
                       </td>
                       <td className="py-1.5 px-2.5 text-center whitespace-nowrap">
-                        <span className="text-[11px] text-slate-600 font-medium">
-                          {atts.length} file
-                        </span>
-                        {meal.hasInvoice && (
-                          <span
-                            className="ml-1 px-1 py-0.2 rounded bg-indigo-50 text-indigo-700 text-[9px] font-bold"
-                            title="Có hóa đơn VAT"
-                          >
-                            VAT
-                          </span>
+                        {atts.length === 0 ? (
+                          <span className="text-[11px] text-slate-400">—</span>
+                        ) : (
+                          <div className="inline-flex items-center gap-1.5">
+                            {atts.slice(0, 2).map((att) =>
+                              att.dataUrl ? (
+                                <button
+                                  key={att.id}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    playClickSound();
+                                    setPreviewLightboxAtt(att);
+                                  }}
+                                  className="relative group rounded-lg overflow-hidden border-2 border-teal-400 shadow-2xs w-9 h-9 bg-slate-100 hover:scale-110 transition-transform"
+                                  title={`Bấm để xem rõ ảnh chuyển khoản: ${att.filename}`}
+                                >
+                                  <img
+                                    src={att.dataUrl}
+                                    alt={att.filename}
+                                    className="w-full h-full object-cover"
+                                  />
+                                </button>
+                              ) : null
+                            )}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                playClickSound();
+                                if (atts[0]) {
+                                  setPreviewLightboxAtt(atts[0]);
+                                }
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 text-[10px] font-bold"
+                            >
+                              🔍 Xem ({atts.length})
+                            </button>
+                          </div>
                         )}
                       </td>
                       <td className="py-1.5 px-2.5 text-center whitespace-nowrap">
@@ -901,7 +932,7 @@ export default function HorusMealsApp() {
                     {/* Dòng mở rộng siêu gọn (Micro-Drawer) khi người dùng bấm mũi tên */}
                     {isExpanded && (
                       <tr className="bg-slate-50/90 border-b border-slate-200 animate-fade-in">
-                        <td colSpan={11} className="px-4 py-2 text-[11px]">
+                        <td colSpan={11} className="px-4 py-3 text-[11px] space-y-2.5">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex flex-wrap items-center gap-1">
                               <span className="font-bold text-slate-600 mr-1">
@@ -930,6 +961,41 @@ export default function HorusMealsApp() {
                               {meal.note ? ` • Ghi chú: ${meal.note}` : ''}
                             </div>
                           </div>
+
+                          {/* Hiển thị trực tiếp ảnh chuyển khoản rõ nét ngay trong dòng mở rộng */}
+                          {atts.length > 0 && (
+                            <div className="pt-2 border-t border-slate-200/80 flex flex-wrap items-start gap-3">
+                              {atts.map((att) => (
+                                <div
+                                  key={att.id}
+                                  onClick={() => {
+                                    playClickSound();
+                                    setPreviewLightboxAtt(att);
+                                  }}
+                                  className="rounded-xl bg-white border border-slate-200 p-2 shadow-2xs hover:border-teal-400 cursor-zoom-in transition flex items-center gap-3"
+                                >
+                                  {att.dataUrl ? (
+                                    <img
+                                      src={att.dataUrl}
+                                      alt={att.filename}
+                                      className="h-36 w-auto max-w-[240px] object-contain rounded-lg bg-slate-50 border border-slate-100"
+                                    />
+                                  ) : null}
+                                  <div className="space-y-1 pr-2">
+                                    <span className="inline-block px-2 py-0.5 rounded bg-teal-600 text-white text-[10px] font-bold">
+                                      Ảnh Chuyển khoản / Bill
+                                    </span>
+                                    <div className="font-bold text-slate-800 text-xs">
+                                      {att.filename}
+                                    </div>
+                                    <div className="text-[10px] text-teal-700 font-semibold">
+                                      🔍 Bấm vào ảnh để phóng to toàn màn hình
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     )}
@@ -1377,34 +1443,68 @@ export default function HorusMealsApp() {
               )}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {state.meals
                 .filter((m) => m.status === 'DRAFT')
                 .map((draftMeal) => {
-                  const attCount = state.attachments.filter(
+                  const mealAtts = state.attachments.filter(
                     (a) => a.mealId === draftMeal.id
-                  ).length;
+                  );
+                  const attCount = mealAtts.length;
                   const attPeople = state.attendance.filter(
                     (a) => a.mealId === draftMeal.id && a.attended
                   ).length;
                   return (
                     <div
                       key={draftMeal.id}
-                      className="bg-white rounded-xl border border-amber-200 p-2.5 flex items-center justify-between gap-2"
+                      className="bg-white rounded-xl border border-amber-200 p-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3"
                     >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-900">
-                          <span className="text-amber-700">{draftMeal.code}</span>
-                          <span>•</span>
-                          <span className="truncate">{draftMeal.venue}</span>
-                          <span>•</span>
-                          <span className="text-teal-700">
-                            {formatVnd(draftMeal.totalPaidVnd)}
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          Ngày: {formatDateTimeVN(draftMeal.occurredAt)} • {attPeople} người ăn •{' '}
-                          {attCount} ảnh đính kèm
+                      <div className="flex items-center gap-3 min-w-0">
+                        {mealAtts[0]?.dataUrl && (
+                          <div
+                            onClick={() => {
+                              playClickSound();
+                              setPreviewLightboxAtt(mealAtts[0]);
+                            }}
+                            className="relative w-24 h-24 rounded-xl overflow-hidden border-2 border-teal-400 bg-slate-50 shrink-0 cursor-zoom-in group shadow-xs"
+                            title="Bấm để phóng to ảnh chuyển khoản toàn màn hình"
+                          >
+                            <img
+                              src={mealAtts[0].dataUrl}
+                              alt={mealAtts[0].filename}
+                              className="w-full h-full object-contain p-0.5 group-hover:scale-105 transition-transform"
+                            />
+                            <span className="absolute bottom-0 inset-x-0 bg-slate-900/80 text-white text-[9px] font-bold text-center py-0.5">
+                              🔍 Phóng to
+                            </span>
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-900">
+                            <span className="text-amber-700">{draftMeal.code}</span>
+                            <span>•</span>
+                            <span className="truncate">{draftMeal.venue}</span>
+                            <span>•</span>
+                            <span className="text-teal-700">
+                              {formatVnd(draftMeal.totalPaidVnd)}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            Ngày: {formatDateTimeVN(draftMeal.occurredAt)} • {attPeople} người ăn •{' '}
+                            {attCount} ảnh đính kèm
+                          </div>
+                          {mealAtts[0] && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                playClickSound();
+                                setPreviewLightboxAtt(mealAtts[0]);
+                              }}
+                              className="mt-1.5 px-2 py-0.5 rounded bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 text-[10px] font-bold inline-flex items-center gap-1"
+                            >
+                              🔍 Xem rõ ảnh CK ({mealAtts[0].filename})
+                            </button>
+                          )}
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -2250,6 +2350,53 @@ export default function HorusMealsApp() {
         liveState={state}
         currentFilters={filters}
       />
+
+      {/* Lightbox Phóng to Ảnh Chuyển khoản / Hóa đơn Toàn màn hình */}
+      {previewLightboxAtt && (
+        <div
+          onClick={() => setPreviewLightboxAtt(null)}
+          className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-fade-in"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl max-w-2xl w-full p-4 shadow-2xl border border-slate-200 animate-scale-in flex flex-col max-h-[92vh]"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 mb-3 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="px-2 py-0.5 rounded bg-teal-600 text-white text-xs font-extrabold shrink-0">
+                  {previewLightboxAtt.type === 'PAYMENT_PROOF'
+                    ? 'Ảnh Chuyển khoản'
+                    : 'Ảnh Hóa đơn / Bill'}
+                </span>
+                <span className="text-sm font-bold text-slate-900 truncate">
+                  {previewLightboxAtt.filename}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewLightboxAtt(null)}
+                className="px-3 py-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold shrink-0"
+              >
+                ✕ Đóng
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto bg-slate-900/5 rounded-xl p-2 flex items-center justify-center min-h-[280px]">
+              {previewLightboxAtt.dataUrl ? (
+                <img
+                  src={previewLightboxAtt.dataUrl}
+                  alt={previewLightboxAtt.filename}
+                  className="max-h-[78vh] w-auto object-contain rounded-lg shadow-sm"
+                />
+              ) : (
+                <div className="py-12 text-slate-500 text-xs">
+                  Không có dữ liệu ảnh hiển thị.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
