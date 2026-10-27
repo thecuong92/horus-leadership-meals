@@ -40,7 +40,11 @@ function makeSvgReceiptDataUrl(
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
-export function createInitialSeedState(): AppState {
+function getBaseProgramsAndMembers(): {
+  programs: Program[];
+  members: Member[];
+  programMemberships: ProgramMembership[];
+} {
   const programs: Program[] = [
     {
       id: 'prog-lunch',
@@ -68,7 +72,7 @@ export function createInitialSeedState(): AppState {
     },
   ];
 
-  // Danh sách 8 thành viên ban đầu theo Mục 2.1 PRD + 1 khách mời mẫu
+  // Danh sách 8 thành viên chính thức ban đầu theo Mục 2.1 PRD
   const members: Member[] = [
     {
       id: 'mem-01',
@@ -137,18 +141,8 @@ export function createInitialSeedState(): AppState {
       isActive: true,
       note: 'Thành viên mới bổ sung từ 15/10/2026',
     },
-    {
-      id: 'mem-guest-01',
-      fullName: 'Khách mời Cố vấn Game',
-      title: 'Khách mời chuyên môn',
-      memberType: 'GUEST',
-      isActive: true,
-      note: 'Khách mời theo buổi (tách khỏi bảng xếp hạng KPI nhân sự nội bộ)',
-    },
   ];
 
-  // Tư cách thành viên theo thời gian (Program Memberships)
-  // Lưu ý AC-04 & AC-20: Trần Việt Phú (mem-08) gia nhập ngày 15/10/2026
   const programMemberships: ProgramMembership[] = [
     { id: 'pm-01', programId: 'prog-lunch', memberId: 'mem-01', startDate: '2026-01-01', endDate: null },
     { id: 'pm-02', programId: 'prog-lunch', memberId: 'mem-02', startDate: '2026-01-01', endDate: null },
@@ -158,7 +152,7 @@ export function createInitialSeedState(): AppState {
     { id: 'pm-06', programId: 'prog-lunch', memberId: 'mem-06', startDate: '2026-01-01', endDate: null },
     { id: 'pm-07', programId: 'prog-lunch', memberId: 'mem-07', startDate: '2026-01-01', endDate: null },
     { id: 'pm-08', programId: 'prog-lunch', memberId: 'mem-08', startDate: '2026-10-15', endDate: null },
-    // Cấu hình tạm Ban Chiến lược Game (Admin có thể thay đổi bất cứ lúc nào trên giao diện Quản trị)
+    // Cấu hình Ban Chiến lược Game
     { id: 'pm-09', programId: 'prog-dinner', memberId: 'mem-01', startDate: '2026-01-01', endDate: null },
     { id: 'pm-10', programId: 'prog-dinner', memberId: 'mem-02', startDate: '2026-01-01', endDate: null },
     { id: 'pm-11', programId: 'prog-dinner', memberId: 'mem-03', startDate: '2026-01-01', endDate: null },
@@ -166,7 +160,98 @@ export function createInitialSeedState(): AppState {
     { id: 'pm-13', programId: 'prog-dinner', memberId: 'mem-05', startDate: '2026-01-01', endDate: null },
   ];
 
-  // Các bữa ăn mẫu trong tháng 10/2026 (và 1 bữa tháng 09/2026 để kiểm thử lọc tháng AC-01)
+  return { programs, members, programMemberships };
+}
+
+/**
+ * Trạng thái khởi tạo mặc định: SẠCH GIAO DỊCH (Tổng = 0đ, 0 bữa ăn, 0 đợt hoàn ứng)
+ * Chỉ giữ lại 2 chương trình và 8 thành viên BOD chính thức để bắt đầu nhập thực tế từ đầu.
+ */
+export function createInitialSeedState(): AppState {
+  const { programs, members, programMemberships } = getBaseProgramsAndMembers();
+  const nowIso = new Date().toISOString();
+
+  return {
+    version: 1,
+    lastUpdatedAt: nowIso,
+    programs,
+    members,
+    programMemberships,
+    meals: [],
+    attendance: [],
+    allocations: [],
+    attachments: [],
+    reimbursementBatches: [],
+    reimbursementItems: [],
+    reimbursementPayments: [],
+    auditLogs: [
+      {
+        id: 'audit-init-zero',
+        actorRole: 'ADMIN',
+        actorName: 'Doãn Thế Cường',
+        entityType: 'SYSTEM_COMMIT',
+        entityId: 'zero-init',
+        action: 'RESET_TO_ZERO',
+        summary:
+          'Khởi tạo hệ thống sạch dữ liệu (Tổng = 0đ, 0 bữa ăn). Sẵn sàng nhập dữ liệu thực tế với 8 thành viên BOD và 2 chương trình.',
+        createdAt: nowIso,
+      },
+    ],
+    commits: [
+      {
+        id: 'commit-zero-01',
+        version: 1,
+        message: 'Khởi tạo hệ thống sạch (Tổng = 0đ) để bắt đầu nhập dữ liệu thực tế',
+        authorName: 'Doãn Thế Cường',
+        authorRole: 'ADMIN',
+        storageTargets: ['CLOUDFLARE_D1_APAC', 'SERVER_DB'],
+        createdAt: nowIso,
+      },
+    ],
+    settings: {
+      requireFinanceApproval: true,
+      includeGuestsInMemberKPI: false,
+      viewerCanSeeAttachments: false,
+      viewerCanSeeReimbursements: true,
+      defaultPayerMemberId: 'mem-02',
+      companyName: 'Horus Entertainment',
+    },
+  };
+}
+
+/**
+ * Tạo trạng thái sạch giao dịch (Tổng = 0đ)
+ */
+export function createCleanProductionState(current?: AppState): AppState {
+  const clean = createInitialSeedState();
+  return {
+    ...clean,
+    version: (current?.version || 1) + 1,
+    programs: current?.programs || clean.programs,
+    members: (current?.members || clean.members).filter((m) => m.memberType === 'EMPLOYEE'),
+    programMemberships: current?.programMemberships || clean.programMemberships,
+    settings: current?.settings || clean.settings,
+  };
+}
+
+/**
+ * Bộ dữ liệu giả lập (Sandbox) phục vụ Kiểm thử 5 Tầng (AC-01 -> AC-20)
+ * hoặc khi người dùng muốn nạp thử dữ liệu mẫu.
+ */
+export function createDemoSampleState(): AppState {
+  const base = createInitialSeedState();
+  const members: Member[] = [
+    ...base.members,
+    {
+      id: 'mem-guest-01',
+      fullName: 'Khách mời Cố vấn Game',
+      title: 'Khách mời chuyên môn',
+      memberType: 'GUEST',
+      isActive: true,
+      note: 'Khách mời theo buổi',
+    },
+  ];
+
   const rawMeals: {
     meal: MealSession;
     attendees: string[];
@@ -209,23 +294,6 @@ export function createInitialSeedState(): AppState {
           uploadedAt: '2026-10-05T13:25:00+07:00',
           uploadedBy: 'Doãn Thế Cường',
         },
-        {
-          id: 'att-02',
-          mealId: 'meal-202610-01',
-          type: 'INVOICE',
-          filename: 'HoaDon_VAT_B202610001.svg',
-          mimeType: 'image/svg+xml',
-          sizeBytes: 21200,
-          dataUrl: makeSvgReceiptDataUrl(
-            'HÓA ĐƠN GTGG (VAT)',
-            'Ký hiệu: 1C26TAA - Số: 0004821 • Cơm Niêu Sài Gòn',
-            '1.050.000 VND',
-            '05/10/2026 13:05 (UTC+7)',
-            '#1d4ed8'
-          ),
-          uploadedAt: '2026-10-05T13:26:00+07:00',
-          uploadedBy: 'Doãn Thế Cường',
-        },
       ],
     },
     {
@@ -241,7 +309,7 @@ export function createInitialSeedState(): AppState {
         status: 'APPROVED',
         allocationMethod: 'EQUAL',
         hasInvoice: true,
-        note: 'Ăn tối thứ Năm Ban Chiến lược Game: Review core loop dự án mới.',
+        note: 'Ăn tối thứ Năm Ban Chiến lược Game.',
         createdBy: 'Doãn Thế Cường',
         createdAt: '2026-10-08T21:10:00+07:00',
         updatedBy: 'Finance Horus',
@@ -258,7 +326,7 @@ export function createInitialSeedState(): AppState {
           sizeBytes: 25100,
           dataUrl: makeSvgReceiptDataUrl(
             'BIÊN LAI QUẸT THẺ POS',
-            'Mã bữa: B-202610-002 • Izakaya Ten (Game Strategy Dinner)',
+            'Mã bữa: B-202610-002 • Izakaya Ten',
             '1.850.000 VND',
             '08/10/2026 20:52 (UTC+7)',
             '#7c3aed'
@@ -281,7 +349,7 @@ export function createInitialSeedState(): AppState {
         status: 'APPROVED',
         allocationMethod: 'EQUAL',
         hasInvoice: false,
-        note: 'Chia sẻ ứng dụng AI Agent trong quy trình sản xuất. (Chia tiền lẻ 6 người: 4 người 166.667đ + 2 người 166.666đ = 1.000.000đ)',
+        note: 'Chia sẻ ứng dụng AI Agent.',
         createdBy: 'Doãn Thế Cường',
         createdAt: '2026-10-12T13:40:00+07:00',
         updatedBy: 'Finance Horus',
@@ -359,7 +427,7 @@ export function createInitialSeedState(): AppState {
         status: 'APPROVED',
         allocationMethod: 'EQUAL',
         hasInvoice: true,
-        note: 'Ăn tối thứ Năm Ban Chiến lược Game + 1 Khách mời Cố vấn Game.',
+        note: 'Ăn tối thứ Năm Ban Chiến lược Game + 1 Khách mời.',
         createdBy: 'Doãn Thế Cường',
         createdAt: '2026-10-22T21:30:00+07:00',
         updatedBy: 'Finance Horus',
@@ -425,7 +493,6 @@ export function createInitialSeedState(): AppState {
         },
       ],
     },
-    // 1 bữa tháng 09/2026 để kiểm chứng AC-01 (không bị lẫn vào tháng 10/2026)
     {
       meal: {
         id: 'meal-202609-01',
@@ -481,193 +548,61 @@ export function createInitialSeedState(): AppState {
         attended: true,
       });
     }
-    const equalAllocations = allocateEqualVnd(
-      item.meal.id,
-      item.meal.totalPaidVnd,
-      item.attendees
+    allocations.push(
+      ...allocateEqualVnd(item.meal.id, item.meal.totalPaidVnd, item.attendees)
     );
-    allocations.push(...equalAllocations);
     attachments.push(...item.attachments);
   }
 
-  // Tạo 2 đợt hoàn ứng mẫu:
-  // Đợt 1 (HU-2026-10-001): Gồm bữa 01 (1.050.000đ) + bữa 02 (1.850.000đ) = 2.900.000đ -> ĐÃ HOÀN ĐỦ (PAID)
-  // Đợt 2 (HU-2026-10-002): Gồm bữa 03 (1.000.000đ) + bữa 04 (960.000đ) = 1.960.000đ -> ĐANG ĐỀ NGHỊ HOÀN (PENDING_PAYMENT)
-  // Còn bữa 05 (2.100.000đ): Đã duyệt nhưng CHƯA ĐƯA VÀO ĐỢT (NOT_CLAIMED)
-  // Còn bữa 06 (840.000đ): Đang chờ duyệt (SUBMITTED)
-  const reimbursementBatches = [
-    {
-      id: 'batch-202610-01',
-      batchCode: 'HU-2026-10-001',
-      payerMemberId: 'mem-02',
-      title: 'Hoàn ứng ăn trưa & tối Chiến lược Game đợt 1 tháng 10/2026',
-      note: 'Đã đối soát đủ UNC & hóa đơn đợt 1 (01/10 - 10/10)',
-      status: 'PAID' as const,
-      submittedAt: '2026-10-10T10:00:00+07:00',
-      approvedAt: '2026-10-11T15:00:00+07:00',
-      createdBy: 'Doãn Thế Cường',
-    },
-    {
-      id: 'batch-202610-02',
-      batchCode: 'HU-2026-10-002',
-      payerMemberId: 'mem-02',
-      title: 'Đề nghị hoàn ứng đợt 2 tháng 10/2026',
-      note: 'Đã xuất bảng kê gửi Kế toán, đang chờ chuyển khoản',
-      status: 'PENDING_PAYMENT' as const,
-      submittedAt: '2026-10-20T14:00:00+07:00',
-      createdBy: 'Doãn Thế Cường',
-    },
-  ];
-
-  const reimbursementItems = [
-    {
-      id: 'ri-01',
-      batchId: 'batch-202610-01',
-      mealId: 'meal-202610-01',
-      claimedAmountVnd: 1050000,
-    },
-    {
-      id: 'ri-02',
-      batchId: 'batch-202610-01',
-      mealId: 'meal-202610-02',
-      claimedAmountVnd: 1850000,
-    },
-    {
-      id: 'ri-03',
-      batchId: 'batch-202610-02',
-      mealId: 'meal-202610-03',
-      claimedAmountVnd: 1000000,
-    },
-    {
-      id: 'ri-04',
-      batchId: 'batch-202610-02',
-      mealId: 'meal-202610-04',
-      claimedAmountVnd: 960000,
-    },
-  ];
-
-  const reimbursementPayments = [
-    {
-      id: 'pay-202610-01',
-      batchId: 'batch-202610-01',
-      payerMemberId: 'mem-02',
-      amountVnd: 2900000,
-      paidAt: '2026-10-11T15:30:00+07:00',
-      reference: 'FT26284991820 - VCB Horus Entertainment',
-      note: 'Hoàn ứng 100% đợt HU-2026-10-001 cho anh Doãn Thế Cường',
-      confirmedBy: 'Finance Horus (Kế toán thanh toán)',
-      idempotencyKey: 'init-pay-01',
-      createdAt: '2026-10-11T15:30:00+07:00',
-    },
-  ];
-
-  const auditLogs = [
-    {
-      id: 'audit-init-01',
-      actorRole: 'ADMIN' as const,
-      actorName: 'Hệ thống Horus',
-      entityType: 'SYSTEM_COMMIT' as const,
-      entityId: 'init',
-      action: 'INITIALIZE',
-      summary:
-        'Khởi tạo hệ thống Horus Leadership Meals v1.0 với 2 chương trình (Leadership Lunch, Game Strategy Dinner) và 8 thành viên BOD ban đầu.',
-      createdAt: '2026-10-01T08:00:00+07:00',
-    },
-    {
-      id: 'audit-init-02',
-      actorRole: 'ADMIN' as const,
-      actorName: 'Doãn Thế Cường',
-      entityType: 'MEMBERSHIP' as const,
-      entityId: 'pm-08',
-      action: 'ADD_MEMBER_EFFECTIVE_DATE',
-      summary:
-        'Bổ sung thành viên Trần Việt Phú vào chương trình Leadership Lunch có hiệu lực từ ngày 15/10/2026.',
-      createdAt: '2026-10-15T09:00:00+07:00',
-    },
-    {
-      id: 'audit-init-03',
-      actorRole: 'FINANCE' as const,
-      actorName: 'Finance Horus',
-      entityType: 'PAYMENT' as const,
-      entityId: 'pay-202610-01',
-      action: 'CONFIRM_REIMBURSEMENT_PAYMENT',
-      summary:
-        'Xác nhận công ty đã hoàn ứng 2.900.000đ cho đợt HU-2026-10-001 (Mã GD: FT26284991820).',
-      createdAt: '2026-10-11T15:30:00+07:00',
-    },
-  ];
-
-  const commits = [
-    {
-      id: 'commit-01',
-      version: 1,
-      message: 'Khởi tạo dữ liệu chuẩn PRD v1.0 (8 thành viên BOD, 2 chương trình, dữ liệu tháng 10/2026)',
-      authorName: 'Doãn Thế Cường',
-      authorRole: 'ADMIN' as const,
-      storageTargets: ['SERVER_DB'],
-      createdAt: '2026-10-27T14:30:00+07:00',
-    },
-  ];
-
   return {
-    version: 1,
-    lastUpdatedAt: new Date().toISOString(),
-    programs,
+    ...base,
     members,
-    programMemberships,
     meals,
     attendance,
     allocations,
     attachments,
-    reimbursementBatches,
-    reimbursementItems,
-    reimbursementPayments,
-    auditLogs,
-    commits,
-    settings: {
-      requireFinanceApproval: true,
-      includeGuestsInMemberKPI: false,
-      viewerCanSeeAttachments: false,
-      viewerCanSeeReimbursements: true,
-      defaultPayerMemberId: 'mem-02',
-      companyName: 'Horus Entertainment',
-    },
-  };
-}
-
-/**
- * Tạo trạng thái sạch giao dịch (chỉ giữ lại 2 chương trình + 8 thành viên BOD + cấu hình)
- * khi người dùng muốn bắt đầu nhập dữ liệu thật từ con số 0.
- */
-export function createCleanProductionState(current?: AppState): AppState {
-  const seed = createInitialSeedState();
-  return {
-    ...seed,
-    version: (current?.version || 1) + 1,
-    lastUpdatedAt: new Date().toISOString(),
-    programs: current?.programs || seed.programs,
-    members: current?.members || seed.members,
-    programMemberships: current?.programMemberships || seed.programMemberships,
-    meals: [],
-    attendance: [],
-    allocations: [],
-    attachments: [],
-    reimbursementBatches: [],
-    reimbursementItems: [],
-    reimbursementPayments: [],
-    auditLogs: [
+    reimbursementBatches: [
       {
-        id: `audit-${Date.now()}`,
-        actorRole: 'ADMIN',
-        actorName: 'Admin',
-        entityType: 'SYSTEM_COMMIT',
-        entityId: 'clean-reset',
-        action: 'RESET_TRANSACTIONS',
-        summary: 'Đã làm sạch các bữa ăn mẫu, giữ nguyên danh sách 8 thành viên BOD và 2 chương trình để vận hành thực tế.',
-        createdAt: new Date().toISOString(),
+        id: 'batch-202610-01',
+        batchCode: 'HU-2026-10-001',
+        payerMemberId: 'mem-02',
+        title: 'Hoàn ứng ăn trưa & tối Chiến lược Game đợt 1 tháng 10/2026',
+        note: 'Đã đối soát đủ UNC & hóa đơn đợt 1',
+        status: 'PAID',
+        submittedAt: '2026-10-10T10:00:00+07:00',
+        approvedAt: '2026-10-11T15:00:00+07:00',
+        createdBy: 'Doãn Thế Cường',
+      },
+      {
+        id: 'batch-202610-02',
+        batchCode: 'HU-2026-10-002',
+        payerMemberId: 'mem-02',
+        title: 'Đề nghị hoàn ứng đợt 2 tháng 10/2026',
+        note: 'Đã xuất bảng kê gửi Kế toán, đang chờ chuyển khoản',
+        status: 'PENDING_PAYMENT',
+        submittedAt: '2026-10-20T14:00:00+07:00',
+        createdBy: 'Doãn Thế Cường',
       },
     ],
-    commits: current?.commits || seed.commits,
-    settings: current?.settings || seed.settings,
+    reimbursementItems: [
+      { id: 'ri-01', batchId: 'batch-202610-01', mealId: 'meal-202610-01', claimedAmountVnd: 1050000 },
+      { id: 'ri-02', batchId: 'batch-202610-01', mealId: 'meal-202610-02', claimedAmountVnd: 1850000 },
+      { id: 'ri-03', batchId: 'batch-202610-02', mealId: 'meal-202610-03', claimedAmountVnd: 1000000 },
+      { id: 'ri-04', batchId: 'batch-202610-02', mealId: 'meal-202610-04', claimedAmountVnd: 960000 },
+    ],
+    reimbursementPayments: [
+      {
+        id: 'pay-202610-01',
+        batchId: 'batch-202610-01',
+        payerMemberId: 'mem-02',
+        amountVnd: 2900000,
+        paidAt: '2026-10-11T15:30:00+07:00',
+        reference: 'FT26284991820 - VCB Horus Entertainment',
+        note: 'Hoàn ứng 100% đợt HU-2026-10-001',
+        confirmedBy: 'Finance Horus',
+        idempotencyKey: 'init-pay-01',
+        createdAt: '2026-10-11T15:30:00+07:00',
+      },
+    ],
   };
 }

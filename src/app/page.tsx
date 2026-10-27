@@ -8,6 +8,7 @@ import {
   BarChart3,
   Calendar,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -15,20 +16,20 @@ import {
   Download,
   Eye,
   FileSpreadsheet,
-  FileText,
-  Filter,
   GitCommit,
+  Layers,
   LayoutDashboard,
   Plus,
   Printer,
   Receipt,
-  RefreshCw,
   Search,
   Settings,
   ShieldCheck,
   Upload,
   Users,
   Utensils,
+  Volume2,
+  VolumeX,
   Wallet,
   XCircle,
 } from 'lucide-react';
@@ -37,6 +38,7 @@ import CommitModal from '@/components/CommitModal';
 import MealModal from '@/components/MealModal';
 import MemberDrilldownModal from '@/components/MemberDrilldownModal';
 import ReimbursementSection from '@/components/ReimbursementSection';
+import TestingCenterModal from '@/components/TestingCenterModal';
 import {
   computeAllMealsReimbursement,
   computeMonthlyReport,
@@ -53,8 +55,15 @@ import {
 } from '@/lib/exporters';
 import {
   createCleanProductionState,
+  createDemoSampleState,
   createInitialSeedState,
 } from '@/lib/seed-data';
+import {
+  isSoundEnabled,
+  playClickSound,
+  playSuccessSound,
+  setSoundEnabled,
+} from '@/lib/sound';
 import {
   AppState,
   FilterState,
@@ -119,17 +128,18 @@ function shiftMonth(yyyyMm: string, delta: number): string {
 
 export default function HorusMealsApp() {
   const [state, setState] = useState<AppState>(() => createInitialSeedState());
-  const [isLoaded, setIsLoaded] = useState<boolean>(false);
   const [syncStatus, setSyncStatus] = useState<string>('Đang tải dữ liệu...');
   const [activeTab, setActiveTab] = useState<NavTab>('DASHBOARD');
   const [role, setRole] = useState<RoleKey>('ADMIN');
+  const [soundOn, setSoundOn] = useState<boolean>(true);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   // Bộ lọc đa chiều toàn cục (F07)
   const [filters, setFilters] = useState<FilterState>({
     month: '2026-10',
     programId: 'ALL',
     memberId: 'ALL',
-    mealStatusScope: 'OPERATIONAL', // Mặc định: SUBMITTED + APPROVED (F07)
+    mealStatusScope: 'OPERATIONAL',
     reimbursementFilter: 'ALL',
     invoiceFilter: 'ALL',
     payerMemberId: 'ALL',
@@ -137,6 +147,11 @@ export default function HorusMealsApp() {
     dateFrom: '',
     dateTo: '',
   });
+
+  // Phân trang & Mở rộng dòng siêu gọn cho bảng Bữa ăn
+  const [mealPage, setMealPage] = useState<number>(1);
+  const [mealPageSize, setMealPageSize] = useState<number>(25);
+  const [expandedMealIds, setExpandedMealIds] = useState<string[]>([]);
 
   // Sắp xếp bảng thống kê thành viên (F08)
   const [memberSortBy, setMemberSortBy] = useState<
@@ -151,10 +166,21 @@ export default function HorusMealsApp() {
   const [drilldownMemberRow, setDrilldownMemberRow] =
     useState<MemberReportRow | null>(null);
   const [isCommitModalOpen, setIsCommitModalOpen] = useState<boolean>(false);
+  const [isTestingModalOpen, setIsTestingModalOpen] = useState<boolean>(false);
 
   const currentUserName = ROLE_CONFIG[role].userName;
 
-  // Tải trạng thái từ Server API khi mở trang hoặc đổi vai trò
+  useEffect(() => {
+    setSoundOn(isSoundEnabled());
+  }, []);
+
+  const showToast = useCallback((text: string) => {
+    setToastMsg(text);
+    setTimeout(() => {
+      setToastMsg((prev) => (prev === text ? null : prev));
+    }, 3200);
+  }, []);
+
   const fetchStateFromServer = useCallback(async (currentRole: RoleKey) => {
     try {
       const res = await fetch(`/api/state?role=${currentRole}`, {
@@ -165,14 +191,12 @@ export default function HorusMealsApp() {
         if (data.state) {
           setState(data.state);
           setSyncStatus(
-            `Đã đồng bộ (${data.source || 'SERVER_DB'} • v${data.state.version})`
+            `Cloud Sync (${data.source || 'SERVER_DB'} • v${data.state.version})`
           );
         }
       }
     } catch {
-      setSyncStatus('Chế độ Offline / Bộ nhớ trình duyệt');
-    } finally {
-      setIsLoaded(true);
+      setSyncStatus('Offline Mode');
     }
   }, []);
 
@@ -180,11 +204,13 @@ export default function HorusMealsApp() {
     fetchStateFromServer(role);
   }, [fetchStateFromServer, role]);
 
-  // Hàm lưu tự động lên Server mỗi khi có thao tác nghiệp vụ
   const persistStateToServer = useCallback(
     async (nextState: AppState, summary?: string) => {
       setState(nextState);
-      setSyncStatus('Đang lưu lên hệ thống...');
+      setSyncStatus('Đang đồng bộ...');
+      if (summary) {
+        showToast(summary);
+      }
       try {
         const res = await fetch('/api/state', {
           method: 'PUT',
@@ -198,18 +224,17 @@ export default function HorusMealsApp() {
         if (res.ok) {
           const data = await res.json();
           const targets = (data.savedTargets || ['SERVER_DB']).join(', ');
-          setSyncStatus(`Đã lưu tự động (${targets} • v${nextState.version})`);
+          setSyncStatus(`Đã lưu (${targets} • v${nextState.version})`);
         } else {
           setSyncStatus('Lưu cục bộ (Chờ Commit)');
         }
       } catch {
-        setSyncStatus('Lưu cục bộ (Chờ kết nối Server)');
+        setSyncStatus('Lưu cục bộ (Chờ kết nối)');
       }
     },
-    [role]
+    [role, showToast]
   );
 
-  // Tính toán toàn bộ báo cáo tháng & trạng thái hoàn ứng
   const reimbMap = useMemo(() => computeAllMealsReimbursement(state), [state]);
   const monthlyReport = useMemo(
     () => computeMonthlyReport(state, filters),
@@ -220,7 +245,17 @@ export default function HorusMealsApp() {
     [state, filters, reimbMap]
   );
 
-  // Dữ liệu biểu đồ theo ngày trong tháng
+  // Phân trang cho danh sách bữa ăn siêu gọn
+  const totalMealPages = Math.max(
+    1,
+    Math.ceil(filteredMeals.length / mealPageSize)
+  );
+  const paginatedMeals = useMemo(() => {
+    const safePage = Math.min(mealPage, totalMealPages);
+    const start = (safePage - 1) * mealPageSize;
+    return filteredMeals.slice(start, start + mealPageSize);
+  }, [filteredMeals, mealPage, mealPageSize, totalMealPages]);
+
   const dailyChartData = useMemo(() => {
     const map: Record<
       string,
@@ -246,7 +281,6 @@ export default function HorusMealsApp() {
     return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
   }, [filteredMeals, state.programs]);
 
-  // Danh sách nhân sự đã sắp xếp theo lựa chọn trên trang Thống kê thành viên
   const sortedMemberRows = useMemo(() => {
     let rows = [...monthlyReport.memberRows];
     if (onlyProgramMembersFilter && filters.programId !== 'ALL') {
@@ -279,8 +313,17 @@ export default function HorusMealsApp() {
     memberSortBy,
   ]);
 
+  const toggleExpandMealRow = (mealId: string) => {
+    playClickSound();
+    setExpandedMealIds((prev) =>
+      prev.includes(mealId)
+        ? prev.filter((id) => id !== mealId)
+        : [...prev, mealId]
+    );
+  };
+
   // ============================================================================
-  // Handlers cho các thao tác nghiệp vụ
+  // Handlers
   // ============================================================================
   const handleSaveMeal = (payload: {
     meal: MealSession;
@@ -341,7 +384,6 @@ export default function HorusMealsApp() {
     const targetMeal = state.meals.find((m) => m.id === mealId);
     if (!targetMeal) return;
 
-    // Kiểm tra ràng buộc Mục 8.1 trước khi duyệt: SUM(allocations) == total_paid_vnd & có >=1 ảnh chứng từ TT
     if (decision === 'APPROVED') {
       const mealAllocs = state.allocations.filter((a) => a.mealId === mealId);
       const sumAlloc = mealAllocs.reduce((s, a) => s + a.amountVnd, 0);
@@ -362,8 +404,9 @@ export default function HorusMealsApp() {
       }
     }
 
-    const summary = `Chuyển trạng thái bữa ăn ${targetMeal.code} (${targetMeal.venue}) từ ${targetMeal.status} → ${decision}${
-      reason ? ` (Lý do: ${reason})` : ''
+    playSuccessSound();
+    const summary = `Chuyển trạng thái bữa ${targetMeal.code} (${targetMeal.venue}) → ${decision}${
+      reason ? ` (${reason})` : ''
     }`;
 
     const nextState: AppState = {
@@ -373,7 +416,8 @@ export default function HorusMealsApp() {
           ? {
               ...m,
               status: decision,
-              rejectionReason: decision === 'REJECTED' ? reason : m.rejectionReason,
+              rejectionReason:
+                decision === 'REJECTED' ? reason : m.rejectionReason,
               updatedBy: currentUserName,
               updatedAt: new Date().toISOString(),
             }
@@ -402,6 +446,7 @@ export default function HorusMealsApp() {
     items: ReimbursementItem[];
     auditSummary: string;
   }) => {
+    playSuccessSound();
     const nextState: AppState = {
       ...state,
       reimbursementBatches: [payload.batch, ...state.reimbursementBatches],
@@ -428,8 +473,9 @@ export default function HorusMealsApp() {
     itemId: string,
     mealCode: string
   ) => {
+    playClickSound();
     const batch = state.reimbursementBatches.find((b) => b.id === batchId);
-    const summary = `Loại bỏ bữa ăn ${mealCode} khỏi đợt hoàn ứng ${batch?.batchCode || batchId}`;
+    const summary = `Loại bỏ bữa ${mealCode} khỏi đợt ${batch?.batchCode || batchId}`;
     const nextState: AppState = {
       ...state,
       reimbursementItems: state.reimbursementItems.filter(
@@ -453,6 +499,7 @@ export default function HorusMealsApp() {
   };
 
   const handleVoidBatch = (batchId: string, batchCode: string) => {
+    playClickSound();
     const summary = `Hủy đợt hoàn ứng chưa thanh toán ${batchCode}`;
     const nextState: AppState = {
       ...state,
@@ -481,7 +528,6 @@ export default function HorusMealsApp() {
     updatedBatchStatus: 'PARTIALLY_PAID' | 'PAID',
     auditSummary: string
   ) => {
-    // Kiểm tra idempotency key tránh bấm 2 lần
     if (
       payment.idempotencyKey &&
       state.reimbursementPayments.some(
@@ -490,7 +536,7 @@ export default function HorusMealsApp() {
     ) {
       return;
     }
-
+    playSuccessSound();
     const nextState: AppState = {
       ...state,
       reimbursementBatches: state.reimbursementBatches.map((b) =>
@@ -517,7 +563,6 @@ export default function HorusMealsApp() {
         ...state.auditLogs,
       ],
     };
-
     persistStateToServer(nextState, auditSummary);
   };
 
@@ -528,11 +573,18 @@ export default function HorusMealsApp() {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result)) as AppState;
-        if (parsed && Array.isArray(parsed.programs) && Array.isArray(parsed.members)) {
-          persistStateToServer(parsed, 'Khôi phục dữ liệu từ file JSON Backup');
-          alert('Đã nhập dữ liệu sao lưu thành công!');
+        if (
+          parsed &&
+          Array.isArray(parsed.programs) &&
+          Array.isArray(parsed.members)
+        ) {
+          playSuccessSound();
+          persistStateToServer(
+            parsed,
+            'Khôi phục dữ liệu từ file JSON Backup'
+          );
         } else {
-          alert('File JSON không đúng cấu trúc dữ liệu Horus Leadership Meals.');
+          alert('File JSON không đúng cấu trúc Horus Leadership Meals.');
         }
       } catch {
         alert('Không thể đọc file JSON.');
@@ -546,32 +598,32 @@ export default function HorusMealsApp() {
     switch (status) {
       case 'APPROVED':
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">
-            <CheckCircle2 className="w-3 h-3" /> Đã duyệt
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+            ✓ Duyệt
           </span>
         );
       case 'SUBMITTED':
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold text-[11px]">
-            <Clock className="w-3 h-3" /> Chờ duyệt
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold text-[10px]">
+            Chờ duyệt
           </span>
         );
       case 'DRAFT':
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 font-semibold text-[11px]">
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-semibold text-[10px]">
             Nháp
           </span>
         );
       case 'REJECTED':
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">
-            <XCircle className="w-3 h-3" /> Trả lại
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold text-[10px]">
+            Trả lại
           </span>
         );
       case 'VOIDED':
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 font-semibold text-[11px]">
-            Đã hủy
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-semibold text-[10px]">
+            Hủy
           </span>
         );
     }
@@ -581,134 +633,416 @@ export default function HorusMealsApp() {
     switch (status) {
       case 'REIMBURSED':
         return (
-          <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">
-            ✓ Đã hoàn đủ
+          <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+            Đã hoàn
           </span>
         );
       case 'PARTIALLY_REIMBURSED':
         return (
-          <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 font-bold text-[11px]">
+          <span className="px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 font-bold text-[10px]">
             Hoàn 1 phần
           </span>
         );
       case 'CLAIMED':
         return (
-          <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">
+          <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold text-[10px]">
             Đang đề nghị
           </span>
         );
       case 'NOT_CLAIMED':
         return (
-          <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 font-semibold text-[11px] border border-blue-200">
+          <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium text-[10px] border border-blue-200">
             Chưa lập đợt
           </span>
         );
       case 'REJECTED_RETURNED':
         return (
-          <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-semibold text-[11px]">
-            Hồ sơ trả lại
+          <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-medium text-[10px]">
+            Trả lại
           </span>
         );
       default:
         return (
-          <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[11px]">
-            Chưa đủ ĐK
+          <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 text-[10px]">
+            —
           </span>
         );
     }
   };
 
+  /**
+   * Bảng hiển thị danh sách bữa ăn SIÊU GỌN (High-Density Compact Table)
+   * Thiết kế chuyên biệt để khi dữ liệu phình lên hàng trăm/nghìn bữa ăn vẫn nhỏ gọn, dễ nhìn.
+   */
+  const renderCompactMealsTable = (mealsToRender: MealSession[]) => {
+    if (mealsToRender.length === 0) {
+      return (
+        <div className="py-8 px-4 text-center rounded-xl bg-slate-50 border border-dashed border-slate-300 animate-fade-in">
+          <Utensils className="w-7 h-7 text-slate-400 mx-auto mb-2" />
+          <div className="text-xs font-bold text-slate-700">
+            Chưa có bữa ăn nào (Tổng chi phí = 0đ)
+          </div>
+          <p className="text-[11px] text-slate-500 mt-0.5 mb-3">
+            Hệ thống đã được làm sạch về 0 để bạn bắt đầu nhập dữ liệu thực tế từ đầu.
+          </p>
+          {role !== 'VIEWER' && (
+            <button
+              type="button"
+              onClick={() => {
+                playClickSound();
+                setEditingMeal(null);
+                setIsMealModalOpen(true);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition active:scale-95"
+            >
+              <Plus className="w-3.5 h-3.5" /> + Thêm bữa ăn đầu tiên
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-slate-100/90 text-slate-600 border-b border-slate-200 text-[11px]">
+                <th className="py-2 px-2.5 w-8 text-center"></th>
+                <th className="py-2 px-2.5">Mã bữa</th>
+                <th className="py-2 px-2.5">Ngày giờ (UTC+7)</th>
+                <th className="py-2 px-2.5">Chương trình</th>
+                <th className="py-2 px-2.5">Địa điểm / Quán ăn</th>
+                <th className="py-2 px-2.5 text-center">Có mặt</th>
+                <th className="py-2 px-2.5 text-right">Thực chi (VND)</th>
+                <th className="py-2 px-2.5 text-center">Chứng từ</th>
+                <th className="py-2 px-2.5 text-center">Hồ sơ</th>
+                <th className="py-2 px-2.5 text-center">Hoàn ứng</th>
+                <th className="py-2 px-2.5 text-right">Thao tác</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {mealsToRender.map((meal) => {
+                const prog = state.programs.find((p) => p.id === meal.programId);
+                const payer = state.members.find(
+                  (m) => m.id === meal.payerMemberId
+                );
+                const attendeeMembers = state.attendance
+                  .filter((a) => a.mealId === meal.id && a.attended)
+                  .map((a) => state.members.find((m) => m.id === a.memberId))
+                  .filter(Boolean) as Member[];
+                const atts = state.attachments.filter(
+                  (a) => a.mealId === meal.id
+                );
+                const rInfo = reimbMap[meal.id];
+                const isExpanded = expandedMealIds.includes(meal.id);
+
+                return (
+                  <React.Fragment key={meal.id}>
+                    <tr
+                      className={`hover:bg-teal-50/40 transition ${
+                        isExpanded ? 'bg-slate-50/80' : ''
+                      }`}
+                    >
+                      <td className="py-1.5 px-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => toggleExpandMealRow(meal.id)}
+                          className="p-1 rounded hover:bg-slate-200 text-slate-500 transition"
+                          title="Mở rộng xem nhanh người có mặt & phân bổ"
+                        >
+                          <ChevronDown
+                            className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                              isExpanded ? 'rotate-180 text-teal-600' : ''
+                            }`}
+                          />
+                        </button>
+                      </td>
+                      <td
+                        onClick={() => {
+                          playClickSound();
+                          setEditingMeal(meal);
+                          setIsMealModalOpen(true);
+                        }}
+                        className="py-1.5 px-2.5 font-mono font-bold text-[11px] text-slate-900 cursor-pointer hover:text-teal-700 whitespace-nowrap"
+                      >
+                        {meal.code}
+                      </td>
+                      <td className="py-1.5 px-2.5 text-[11px] text-slate-600 whitespace-nowrap">
+                        {formatDateTimeVN(meal.occurredAt)}
+                      </td>
+                      <td className="py-1.5 px-2.5 whitespace-nowrap">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            prog?.code === 'LEADERSHIP_LUNCH'
+                              ? 'bg-teal-50 text-teal-800 border border-teal-200'
+                              : 'bg-indigo-50 text-indigo-800 border border-indigo-200'
+                          }`}
+                        >
+                          {prog?.code === 'LEADERSHIP_LUNCH'
+                            ? 'Ăn trưa'
+                            : 'Tối T5'}
+                        </span>
+                      </td>
+                      <td
+                        onClick={() => {
+                          playClickSound();
+                          setEditingMeal(meal);
+                          setIsMealModalOpen(true);
+                        }}
+                        className="py-1.5 px-2.5 font-semibold text-slate-900 max-w-[200px] truncate cursor-pointer hover:text-teal-700"
+                        title={`${meal.venue}${meal.note ? ` — ${meal.note}` : ''}`}
+                      >
+                        {meal.venue}
+                      </td>
+                      <td
+                        onClick={() => toggleExpandMealRow(meal.id)}
+                        className="py-1.5 px-2.5 text-center cursor-pointer"
+                        title={attendeeMembers.map((m) => m.fullName).join(', ')}
+                      >
+                        <span className="px-1.5 py-0.5 rounded-full bg-slate-100 hover:bg-teal-100 text-slate-700 font-bold text-[11px]">
+                          {attendeeMembers.length} người
+                        </span>
+                      </td>
+                      <td className="py-1.5 px-2.5 text-right font-extrabold text-slate-900 whitespace-nowrap">
+                        {formatVnd(meal.totalPaidVnd)}
+                      </td>
+                      <td className="py-1.5 px-2.5 text-center whitespace-nowrap">
+                        <span className="text-[11px] text-slate-600 font-medium">
+                          {atts.length} file
+                        </span>
+                        {meal.hasInvoice && (
+                          <span
+                            className="ml-1 px-1 py-0.2 rounded bg-indigo-50 text-indigo-700 text-[9px] font-bold"
+                            title="Có hóa đơn VAT"
+                          >
+                            VAT
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1.5 px-2.5 text-center whitespace-nowrap">
+                        {renderStatusBadge(meal.status)}
+                      </td>
+                      <td className="py-1.5 px-2.5 text-center whitespace-nowrap">
+                        {renderReimbBadge(rInfo?.status || 'NOT_ELIGIBLE')}
+                      </td>
+                      <td className="py-1.5 px-2.5 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          {(role === 'ADMIN' || role === 'FINANCE') &&
+                            meal.status === 'SUBMITTED' && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleApproveOrRejectMeal(meal.id, 'APPROVED')
+                                }
+                                className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold"
+                                title="Duyệt nhanh"
+                              >
+                                Duyệt
+                              </button>
+                            )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              playClickSound();
+                              setEditingMeal(meal);
+                              setIsMealModalOpen(true);
+                            }}
+                            className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold"
+                          >
+                            Chi tiết
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* Dòng mở rộng siêu gọn (Micro-Drawer) khi người dùng bấm mũi tên */}
+                    {isExpanded && (
+                      <tr className="bg-slate-50/90 border-b border-slate-200 animate-fade-in">
+                        <td colSpan={11} className="px-4 py-2 text-[11px]">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="font-bold text-slate-600 mr-1">
+                                Người tham gia & Phân bổ:
+                              </span>
+                              {attendeeMembers.map((m) => {
+                                const al = state.allocations.find(
+                                  (x) =>
+                                    x.mealId === meal.id && x.memberId === m.id
+                                );
+                                return (
+                                  <span
+                                    key={m.id}
+                                    className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-700"
+                                  >
+                                    <strong>{m.fullName}</strong>:{' '}
+                                    <span className="text-teal-700 font-semibold">
+                                      {formatVnd(al?.amountVnd || 0)}
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                            <div className="text-slate-500">
+                              Ứng bởi: <strong>{payer?.fullName}</strong>
+                              {meal.note ? ` • Ghi chú: ${meal.note}` : ''}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
+      {/* Toast thông báo nổi có animation */}
+      {toastMsg && (
+        <div className="fixed bottom-4 right-4 z-50 px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold shadow-xl border border-teal-500/40 flex items-center gap-2 animate-slide-up">
+          <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
       {/* =====================================================================
-          TOP HEADER BAR
+          TOP HEADER BAR (Gọn, hiện đại, có Bật/Tắt Âm thanh & Kiểm thử 5 Tầng)
          ===================================================================== */}
       <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-md">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="max-w-7xl mx-auto px-3 sm:px-5 py-2.5 flex flex-wrap items-center justify-between gap-2">
           {/* Brand */}
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-400 to-emerald-600 flex items-center justify-center text-slate-950 font-black text-lg shadow-inner">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-teal-400 to-emerald-600 flex items-center justify-center text-slate-950 font-black text-base shadow-inner">
               H
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-base sm:text-lg font-extrabold tracking-tight">
+                <h1 className="text-sm sm:text-base font-extrabold tracking-tight">
                   HORUS LEADERSHIP MEALS
                 </h1>
-                <span className="hidden md:inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-teal-300 border border-slate-700 font-medium">
+                <span className="hidden lg:inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-teal-300 border border-slate-700 font-medium">
                   <Cloud className="w-3 h-3" /> {syncStatus}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400">
-                Quản lý Ăn trưa BOD • Ăn tối Chiến lược Game • Điểm danh & Đối soát Hoàn ứng
+              <p className="text-[10px] text-slate-400">
+                Ăn trưa BOD • Ăn tối Chiến lược Game • Điểm danh & Đối soát Hoàn ứng
               </p>
             </div>
           </div>
 
-          {/* Right Controls: Role Switcher + Commit Button + Add Meal Button */}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Bộ chọn vai trò trực tiếp (Không cần mật khẩu theo yêu cầu) */}
-            <div className="flex items-center bg-slate-800/90 border border-slate-700 rounded-xl px-2.5 py-1.5">
-              <ShieldCheck className="w-4 h-4 text-teal-400 mr-1.5 shrink-0" />
-              <span className="text-[11px] text-slate-400 mr-1.5 hidden sm:inline">
-                Vai trò:
-              </span>
+          {/* Right Controls */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* Nút Bật/Tắt Âm thanh tương tác */}
+            <button
+              type="button"
+              onClick={() => {
+                const next = !soundOn;
+                setSoundOn(next);
+                setSoundEnabled(next);
+              }}
+              className={`p-1.5 rounded-xl border text-xs transition ${
+                soundOn
+                  ? 'bg-slate-800 border-teal-500/40 text-teal-300 hover:bg-slate-700'
+                  : 'bg-slate-800/50 border-slate-700 text-slate-500 hover:text-slate-300'
+              }`}
+              title={
+                soundOn
+                  ? 'Âm thanh tương tác: ĐANG BẬT (Bấm để tắt)'
+                  : 'Âm thanh tương tác: ĐANG TẮT (Bấm để bật)'
+              }
+            >
+              {soundOn ? (
+                <Volume2 className="w-4 h-4" />
+              ) : (
+                <VolumeX className="w-4 h-4" />
+              )}
+            </button>
+
+            {/* Nút Mở Trung tâm Kiểm thử 5 Tầng */}
+            <button
+              type="button"
+              onClick={() => {
+                playClickSound();
+                setIsTestingModalOpen(true);
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-400/40 text-indigo-200 text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
+              title="Mở Trung tâm Kiểm thử Tự động 5 Tầng (AC-01 → AC-20)"
+            >
+              <Layers className="w-3.5 h-3.5 text-indigo-300" />
+              <span className="hidden sm:inline">Kiểm thử 5 Tầng</span>
+            </button>
+
+            {/* Chọn vai trò */}
+            <div className="flex items-center bg-slate-800/90 border border-slate-700 rounded-xl px-2 py-1">
+              <ShieldCheck className="w-3.5 h-3.5 text-teal-400 mr-1 shrink-0" />
               <select
                 value={role}
-                onChange={(e) => setRole(e.target.value as RoleKey)}
+                onChange={(e) => {
+                  playClickSound();
+                  setRole(e.target.value as RoleKey);
+                }}
                 className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
               >
                 <option value="ADMIN" className="bg-slate-900 text-white">
-                  👑 Admin / Owner (Toàn quyền)
+                  👑 Admin
                 </option>
                 <option value="PAYER" className="bg-slate-900 text-white">
-                  💳 Payer (Doãn Thế Cường)
+                  💳 Payer (Anh Cường)
                 </option>
                 <option value="FINANCE" className="bg-slate-900 text-white">
-                  📋 Finance / Kế toán duyệt
+                  📋 Finance
                 </option>
                 <option value="VIEWER" className="bg-slate-900 text-white">
-                  👁️ Viewer / Leadership (Chỉ xem)
+                  👁️ Viewer
                 </option>
               </select>
             </div>
 
-            {/* Nút Commit lên hệ thống */}
+            {/* Nút Commit Hệ thống */}
             <button
               type="button"
-              onClick={() => setIsCommitModalOpen(true)}
-              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-teal-500/40 text-teal-300 text-xs font-bold flex items-center gap-1.5 transition"
-              title="Commit và đồng bộ dữ liệu lên hệ thống Git / Cloud Database"
+              onClick={() => {
+                playClickSound();
+                setIsCommitModalOpen(true);
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-teal-500/40 text-teal-300 text-xs font-bold flex items-center gap-1 transition active:scale-95"
             >
-              <GitCommit className="w-4 h-4" />
-              <span>Commit Hệ thống (v{state.version})</span>
+              <GitCommit className="w-3.5 h-3.5" />
+              <span>Commit (v{state.version})</span>
             </button>
 
-            {/* Nút Thêm bữa ăn nhanh */}
+            {/* Nút Thêm bữa ăn */}
             {role !== 'VIEWER' && (
               <button
                 type="button"
                 onClick={() => {
+                  playClickSound();
                   setEditingMeal(null);
                   setIsMealModalOpen(true);
                 }}
-                className="px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition"
+                className="px-3 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-extrabold flex items-center gap-1 shadow-sm transition active:scale-95"
               >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
+                <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                 <span>Thêm bữa ăn</span>
               </button>
             )}
           </div>
         </div>
 
-        {/* Navigation Tabs (6 menu chính theo Mục 7.1 PRD) */}
+        {/* Navigation Tabs */}
         <div className="bg-slate-950/60 border-t border-slate-800/80">
-          <div className="max-w-7xl mx-auto px-3 sm:px-6 flex items-center gap-1 overflow-x-auto no-scrollbar">
+          <div className="max-w-7xl mx-auto px-3 sm:px-5 flex items-center gap-1 overflow-x-auto no-scrollbar">
             {(
               [
                 {
                   id: 'DASHBOARD',
-                  label: '1. Tổng quan tháng',
+                  label: '1. Tổng quan',
                   icon: LayoutDashboard,
                 },
                 {
@@ -723,12 +1057,12 @@ export default function HorusMealsApp() {
                 },
                 {
                   id: 'REIMBURSEMENTS',
-                  label: '4. Hoàn ứng & Công nợ',
+                  label: '4. Hoàn ứng',
                   icon: Wallet,
                 },
                 {
                   id: 'EXPORTS',
-                  label: '5. Báo cáo & Xuất file',
+                  label: '5. Xuất báo cáo',
                   icon: FileSpreadsheet,
                 },
                 {
@@ -744,14 +1078,17 @@ export default function HorusMealsApp() {
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`px-3.5 py-2.5 text-xs font-bold flex items-center gap-2 border-b-2 whitespace-nowrap transition ${
+                  onClick={() => {
+                    playClickSound();
+                    setActiveTab(tab.id);
+                  }}
+                  className={`px-3 py-2 text-xs font-bold flex items-center gap-1.5 border-b-2 whitespace-nowrap transition ${
                     active
                       ? 'border-teal-400 text-teal-300 bg-slate-900/60'
                       : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/30'
                   }`}
                 >
-                  <Icon className="w-4 h-4" />
+                  <Icon className="w-3.5 h-3.5" />
                   <span>{tab.label}</span>
                 </button>
               );
@@ -761,87 +1098,90 @@ export default function HorusMealsApp() {
       </header>
 
       {/* =====================================================================
-          GLOBAL FILTER BAR (F07: Bộ lọc đa chiều bắt buộc)
+          COMPACT GLOBAL FILTER BAR (F07)
          ===================================================================== */}
       {activeTab !== 'ADMIN' && (
         <section className="bg-white border-b border-slate-200 shadow-2xs">
-          <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2.5">
-            {/* Bộ chọn Tháng/Năm (UTC+7) */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200">
+          <div className="max-w-7xl mx-auto px-3 sm:px-5 py-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {/* Tháng/Năm */}
+              <div className="flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200">
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    playClickSound();
                     setFilters((f) => ({
                       ...f,
                       month: shiftMonth(
                         f.month === 'ALL' ? '2026-10' : f.month,
                         -1
                       ),
-                    }))
-                  }
-                  className="p-1.5 rounded-lg hover:bg-white text-slate-700 transition"
-                  title="Tháng trước"
+                    }));
+                  }}
+                  className="p-1 rounded hover:bg-white text-slate-700"
                 >
-                  <ChevronLeft className="w-4 h-4" />
+                  <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
-                <div className="px-2.5 flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-teal-600" />
+                <div className="px-2 flex items-center gap-1">
+                  <Calendar className="w-3 h-3 text-teal-600" />
                   <input
                     type="month"
                     value={filters.month === 'ALL' ? '2026-10' : filters.month}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      playClickSound();
                       setFilters((f) => ({
                         ...f,
                         month: e.target.value || '2026-10',
-                      }))
-                    }
+                      }));
+                    }}
                     className="bg-transparent text-xs font-extrabold text-slate-900 focus:outline-none"
                   />
                 </div>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    playClickSound();
                     setFilters((f) => ({
                       ...f,
                       month: shiftMonth(
                         f.month === 'ALL' ? '2026-10' : f.month,
                         1
                       ),
-                    }))
-                  }
-                  className="p-1.5 rounded-lg hover:bg-white text-slate-700 transition"
-                  title="Tháng sau"
+                    }));
+                  }}
+                  className="p-1 rounded hover:bg-white text-slate-700"
                 >
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-3.5 h-3.5" />
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    playClickSound();
                     setFilters((f) => ({
                       ...f,
                       month: f.month === 'ALL' ? '2026-10' : 'ALL',
-                    }))
-                  }
-                  className={`ml-1 px-2 py-1 rounded-lg text-[11px] font-bold transition ${
+                    }));
+                  }}
+                  className={`ml-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${
                     filters.month === 'ALL'
                       ? 'bg-slate-900 text-white'
                       : 'text-slate-600 hover:bg-white'
                   }`}
                 >
-                  Tất cả kỳ
+                  Tất cả
                 </button>
               </div>
 
-              {/* Bộ lọc Chương trình */}
+              {/* Chương trình */}
               <select
                 value={filters.programId}
-                onChange={(e) =>
-                  setFilters((f) => ({ ...f, programId: e.target.value }))
-                }
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800"
+                onChange={(e) => {
+                  playClickSound();
+                  setFilters((f) => ({ ...f, programId: e.target.value }));
+                }}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800"
               >
-                <option value="ALL">Chương trình: Tất cả (Gộp)</option>
+                <option value="ALL">Chương trình: Tất cả</option>
                 {state.programs.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.shortName}
@@ -849,105 +1189,71 @@ export default function HorusMealsApp() {
                 ))}
               </select>
 
-              {/* Bộ lọc Nhân sự */}
+              {/* Nhân sự */}
               <select
                 value={filters.memberId}
-                onChange={(e) =>
-                  setFilters((f) => ({ ...f, memberId: e.target.value }))
-                }
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800"
+                onChange={(e) => {
+                  playClickSound();
+                  setFilters((f) => ({ ...f, memberId: e.target.value }));
+                }}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800"
               >
                 <option value="ALL">Nhân sự: Tất cả ({state.members.length})</option>
                 {state.members.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.fullName} {m.title ? `(${m.title})` : ''}
+                    {m.fullName}
                   </option>
                 ))}
               </select>
 
-              {/* Phạm vi trạng thái hồ sơ (F07: Mặc định Đã gửi + Đã duyệt) */}
+              {/* Trạng thái */}
               <select
                 value={filters.mealStatusScope}
-                onChange={(e) =>
+                onChange={(e) => {
+                  playClickSound();
                   setFilters((f) => ({
                     ...f,
-                    mealStatusScope: e.target.value as FilterState['mealStatusScope'],
-                  }))
-                }
-                className="px-3 py-2 rounded-xl border border-teal-200 bg-teal-50/70 text-xs font-bold text-teal-900"
+                    mealStatusScope: e.target
+                      .value as FilterState['mealStatusScope'],
+                  }));
+                }}
+                className="px-2.5 py-1.5 rounded-lg border border-teal-200 bg-teal-50/70 text-xs font-bold text-teal-900"
               >
-                <option value="OPERATIONAL">
-                  Nguồn: Đã gửi + Đã duyệt (Mặc định)
-                </option>
-                <option value="APPROVED_ONLY">Chỉ bữa Đã duyệt (APPROVED)</option>
-                <option value="SUBMITTED">Chỉ bữa Chờ duyệt (SUBMITTED)</option>
-                <option value="DRAFT">Chỉ bản Nháp (DRAFT)</option>
-                <option value="REJECTED">Bữa bị trả lại (REJECTED)</option>
-                <option value="ALL">Mọi trạng thái (Kể cả Nháp/Hủy)</option>
-              </select>
-
-              {/* Lọc tình trạng hoàn ứng */}
-              <select
-                value={filters.reimbursementFilter}
-                onChange={(e) =>
-                  setFilters((f) => ({
-                    ...f,
-                    reimbursementFilter:
-                      e.target.value as FilterState['reimbursementFilter'],
-                  }))
-                }
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700"
-              >
-                <option value="ALL">Hoàn ứng: Tất cả</option>
-                <option value="NOT_CLAIMED">Chưa đưa vào đợt</option>
-                <option value="CLAIMED">Đang đề nghị hoàn</option>
-                <option value="PARTIALLY_REIMBURSED">Đã hoàn 1 phần</option>
-                <option value="REIMBURSED">Đã hoàn đủ</option>
-              </select>
-
-              {/* Lọc hóa đơn */}
-              <select
-                value={filters.invoiceFilter}
-                onChange={(e) =>
-                  setFilters((f) => ({
-                    ...f,
-                    invoiceFilter: e.target.value as FilterState['invoiceFilter'],
-                  }))
-                }
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700"
-              >
-                <option value="ALL">Hóa đơn: Tất cả</option>
-                <option value="HAS_INVOICE">Có hóa đơn VAT</option>
-                <option value="NO_INVOICE">Không có hóa đơn</option>
+                <option value="OPERATIONAL">Đã gửi + Đã duyệt</option>
+                <option value="APPROVED_ONLY">Chỉ Đã duyệt</option>
+                <option value="SUBMITTED">Chờ duyệt</option>
+                <option value="DRAFT">Bản Nháp</option>
+                <option value="ALL">Mọi trạng thái</option>
               </select>
             </div>
 
-            {/* Nút Xuất nhanh Excel & PDF */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() =>
-                  exportMonthlyExcel(state, filters, currentUserName, role)
-                }
-                className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs transition"
+                onClick={() => {
+                  playClickSound();
+                  exportMonthlyExcel(state, filters, currentUserName, role);
+                }}
+                className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Xuất Excel (4 Sheet)</span>
+                <span>Excel</span>
               </button>
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
+                  playClickSound();
                   openReimbursementPdfPrintWindow(state, {
                     filters,
                     includeAttachmentImages: true,
                     exporterName: currentUserName,
                     role,
-                  })
-                }
-                className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs transition"
+                  });
+                }}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1"
               >
                 <Printer className="w-3.5 h-3.5" />
-                <span>Xuất PDF</span>
+                <span>PDF</span>
               </button>
             </div>
           </div>
@@ -955,708 +1261,359 @@ export default function HorusMealsApp() {
       )}
 
       {/* =====================================================================
-          MAIN CONTENT CONTAINER
+          MAIN CONTENT
          ===================================================================== */}
-      <main className="max-w-7xl mx-auto w-full px-3 sm:px-6 py-5 flex-1">
+      <main className="max-w-7xl mx-auto w-full px-3 sm:px-5 py-4 flex-1">
         {/* ===================================================================
-            TAB 1: TỔNG QUAN THÁNG (DASHBOARD - Mục 7.2, F08, F09)
+            TAB 1: TỔNG QUAN THÁNG (Gọn, có animation & đối soát)
            =================================================================== */}
         {activeTab === 'DASHBOARD' && (
-          <div className="space-y-6">
-            {/* Banner thông tin nguồn dữ liệu mặc định (F07) */}
-            <div className="px-4 py-2.5 rounded-xl bg-teal-950 text-teal-100 text-xs flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 font-bold border border-teal-400/30">
-                  Múi giờ chuẩn: Asia/Ho_Chi_Minh (UTC+7)
-                </span>
-                <span>
-                  Nguồn dữ liệu đang hiển thị:{' '}
-                  <strong>
-                    {filters.mealStatusScope === 'OPERATIONAL'
-                      ? 'Bữa ăn Đã gửi (SUBMITTED) + Đã duyệt (APPROVED)'
-                      : filters.mealStatusScope}
-                  </strong>{' '}
-                  • Kỳ: <strong>{filters.month === 'ALL' ? 'Toàn thời gian' : `Tháng ${filters.month}`}</strong>
-                </span>
-              </div>
-              <div className="text-[11px] text-teal-300">
-                Tổng thực chi nhóm, phân bổ cá nhân và hoàn ứng được tách bạch chống tính trùng (Mục 6.2 PRD)
-              </div>
-            </div>
-
-            {/* 8 KPI Cards (Mục 7.2 & F09) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-              {/* Card 1: Tổng chi phí thực chi của nhóm */}
-              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    1. Tổng chi phí nhóm
-                  </span>
-                  <span className="p-2 rounded-xl bg-teal-50 text-teal-600">
-                    <Wallet className="w-4 h-4" />
-                  </span>
+          <div className="space-y-4 animate-slide-up">
+            {/* 8 Compact KPI Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="bg-white rounded-xl p-3 border border-slate-200 kpi-card-hover">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase text-slate-500">
+                  <span>1. Tổng chi phí nhóm</span>
+                  <Wallet className="w-3.5 h-3.5 text-teal-600" />
                 </div>
-                <div className="text-2xl font-black text-slate-900 mt-1.5">
+                <div className="text-xl font-black text-slate-900 mt-1">
                   {formatVnd(monthlyReport.totalGroupCostVnd)}
                 </div>
-                <div className="text-xs text-slate-500 mt-1 flex items-center justify-between">
+                <div className="text-[11px] text-slate-500 mt-0.5 flex justify-between">
                   <span>Trưa: {formatVnd(monthlyReport.lunchCostVnd)}</span>
-                  <span>Tối T5: {formatVnd(monthlyReport.dinnerCostVnd)}</span>
+                  <span>Tối: {formatVnd(monthlyReport.dinnerCostVnd)}</span>
                 </div>
               </div>
 
-              {/* Card 2: Số bữa ăn & Bình quân/bữa */}
               <div
-                onClick={() => setActiveTab('MEALS')}
-                className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs cursor-pointer hover:border-teal-400 transition"
+                onClick={() => {
+                  playClickSound();
+                  setActiveTab('MEALS');
+                }}
+                className="bg-white rounded-xl p-3 border border-slate-200 kpi-card-hover cursor-pointer"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    2. Số bữa ăn thực tế
-                  </span>
-                  <span className="p-2 rounded-xl bg-blue-50 text-blue-600">
-                    <Utensils className="w-4 h-4" />
-                  </span>
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase text-slate-500">
+                  <span>2. Số bữa ăn thực tế</span>
+                  <Utensils className="w-3.5 h-3.5 text-blue-600" />
                 </div>
-                <div className="text-2xl font-black text-slate-900 mt-1.5">
+                <div className="text-xl font-black text-slate-900 mt-1">
                   {monthlyReport.totalMeals} bữa
                 </div>
-                <div className="text-xs text-slate-500 mt-1 flex items-center justify-between">
+                <div className="text-[11px] text-slate-500 mt-0.5 flex justify-between">
                   <span>
-                    Trưa: {monthlyReport.lunchMeals} • Tối: {monthlyReport.dinnerMeals}
+                    Trưa: {monthlyReport.lunchMeals} • Tối:{' '}
+                    {monthlyReport.dinnerMeals}
                   </span>
-                  <span className="font-semibold text-slate-700">
-                    BQ: {formatVnd(monthlyReport.avgCostPerMealVnd)}/bữa
-                  </span>
+                  <span>BQ: {formatVnd(monthlyReport.avgCostPerMealVnd)}</span>
                 </div>
               </div>
 
-              {/* Card 3: Tổng lượt tham gia & Bình quân/lượt */}
               <div
-                onClick={() => setActiveTab('MEMBERS_STATS')}
-                className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs cursor-pointer hover:border-teal-400 transition"
+                onClick={() => {
+                  playClickSound();
+                  setActiveTab('MEMBERS_STATS');
+                }}
+                className="bg-white rounded-xl p-3 border border-slate-200 kpi-card-hover cursor-pointer"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    3. Tổng lượt tham gia
-                  </span>
-                  <span className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
-                    <Users className="w-4 h-4" />
-                  </span>
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase text-slate-500">
+                  <span>3. Tổng lượt tham gia</span>
+                  <Users className="w-3.5 h-3.5 text-indigo-600" />
                 </div>
-                <div className="text-2xl font-black text-slate-900 mt-1.5">
+                <div className="text-xl font-black text-slate-900 mt-1">
                   {monthlyReport.totalAttendanceVisits} lượt
                 </div>
-                <div className="text-xs text-slate-500 mt-1 flex items-center justify-between">
-                  <span>{monthlyReport.uniqueAttendeesCount} người duy nhất</span>
-                  <span className="font-semibold text-indigo-700">
-                    BQ: {formatVnd(monthlyReport.avgCostPerVisitVnd)}/lượt
-                  </span>
+                <div className="text-[11px] text-slate-500 mt-0.5 flex justify-between">
+                  <span>{monthlyReport.uniqueAttendeesCount} người</span>
+                  <span>BQ: {formatVnd(monthlyReport.avgCostPerVisitVnd)}</span>
                 </div>
               </div>
 
-              {/* Card 4: Chi phí có / không có hóa đơn */}
-              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    4. Hóa đơn chứng từ
-                  </span>
-                  <span className="p-2 rounded-xl bg-amber-50 text-amber-600">
-                    <Receipt className="w-4 h-4" />
-                  </span>
+              <div className="bg-white rounded-xl p-3 border border-slate-200 kpi-card-hover">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase text-slate-500">
+                  <span>4. Không có HĐ VAT</span>
+                  <Receipt className="w-3.5 h-3.5 text-amber-600" />
                 </div>
-                <div className="text-2xl font-black text-slate-900 mt-1.5">
+                <div className="text-xl font-black text-slate-900 mt-1">
                   {formatVnd(monthlyReport.costWithoutInvoiceVnd)}
                 </div>
-                <div className="text-xs text-slate-500 mt-1 flex items-center justify-between">
-                  <span>{monthlyReport.mealsWithoutInvoiceCount} bữa không HĐ VAT</span>
+                <div className="text-[11px] text-slate-500 mt-0.5 flex justify-between">
+                  <span>{monthlyReport.mealsWithoutInvoiceCount} bữa</span>
                   <span className="text-emerald-700 font-semibold">
                     Có HĐ: {formatVnd(monthlyReport.costWithInvoiceVnd)}
                   </span>
                 </div>
               </div>
 
-              {/* Card 5: Đã ứng của Doãn Thế Cường */}
               <div
-                onClick={() => setActiveTab('REIMBURSEMENTS')}
-                className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs cursor-pointer hover:border-teal-400 transition"
+                onClick={() => {
+                  playClickSound();
+                  setActiveTab('REIMBURSEMENTS');
+                }}
+                className="bg-white rounded-xl p-3 border border-slate-200 kpi-card-hover cursor-pointer"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    5. Tiền anh Cường đã ứng
-                  </span>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
-                    Theo kỳ phát sinh
-                  </span>
+                <div className="text-[10px] font-bold uppercase text-slate-500">
+                  5. Đã ứng (Doãn Thế Cường)
                 </div>
-                <div className="text-2xl font-black text-slate-900 mt-1.5">
+                <div className="text-xl font-black text-slate-900 mt-1">
                   {formatVnd(monthlyReport.payerTotalAdvancedVnd)}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  Đủ ĐK hoàn (Đã duyệt):{' '}
-                  <strong className="text-slate-800">
-                    {formatVnd(monthlyReport.payerApprovedEligibleVnd)}
-                  </strong>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Đủ ĐK hoàn: {formatVnd(monthlyReport.payerApprovedEligibleVnd)}
                 </div>
               </div>
 
-              {/* Card 6: Đang đề nghị hoàn */}
               <div
-                onClick={() => setActiveTab('REIMBURSEMENTS')}
-                className="bg-white rounded-2xl p-4 border border-amber-200/80 shadow-2xs cursor-pointer hover:border-amber-400 transition"
+                onClick={() => {
+                  playClickSound();
+                  setActiveTab('REIMBURSEMENTS');
+                }}
+                className="bg-white rounded-xl p-3 border border-amber-200 kpi-card-hover cursor-pointer"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
-                    6. Đang đề nghị hoàn
-                  </span>
-                  <Clock className="w-4 h-4 text-amber-600" />
+                <div className="text-[10px] font-bold uppercase text-amber-800">
+                  6. Đang đề nghị hoàn
                 </div>
-                <div className="text-2xl font-black text-amber-700 mt-1.5">
+                <div className="text-xl font-black text-amber-700 mt-1">
                   {formatVnd(monthlyReport.payerClaimedPendingVnd)}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  Đã lập đợt bảng kê, chờ công ty chuyển khoản
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Đã lập đợt, chờ chuyển tiền
                 </div>
               </div>
 
-              {/* Card 7: Đã hoàn xác nhận */}
               <div
-                onClick={() => setActiveTab('REIMBURSEMENTS')}
-                className="bg-white rounded-2xl p-4 border border-emerald-200/80 shadow-2xs cursor-pointer hover:border-emerald-400 transition"
+                onClick={() => {
+                  playClickSound();
+                  setActiveTab('REIMBURSEMENTS');
+                }}
+                className="bg-white rounded-xl p-3 border border-emerald-200 kpi-card-hover cursor-pointer"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
-                    7. Công ty đã hoàn
-                  </span>
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <div className="text-[10px] font-bold uppercase text-emerald-800">
+                  7. Công ty đã hoàn
                 </div>
-                <div className="text-2xl font-black text-emerald-700 mt-1.5">
+                <div className="text-xl font-black text-emerald-700 mt-1">
                   {formatVnd(monthlyReport.payerReimbursedForPeriodMealsVnd)}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  Dòng tiền chuyển trong tháng:{' '}
-                  <strong>{formatVnd(monthlyReport.payerReimbursedInPeriodVnd)}</strong>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Đã xác nhận giao dịch UNC
                 </div>
               </div>
 
-              {/* Card 8: Còn phải hoàn (Dư nợ) */}
               <div
-                onClick={() => setActiveTab('REIMBURSEMENTS')}
-                className="bg-rose-50/60 rounded-2xl p-4 border border-rose-200 shadow-2xs cursor-pointer hover:border-rose-400 transition"
+                onClick={() => {
+                  playClickSound();
+                  setActiveTab('REIMBURSEMENTS');
+                }}
+                className="bg-rose-50/60 rounded-xl p-3 border border-rose-200 kpi-card-hover cursor-pointer"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-rose-800">
-                    8. Công ty còn phải hoàn
-                  </span>
-                  <AlertCircle className="w-4 h-4 text-rose-600" />
+                <div className="text-[10px] font-bold uppercase text-rose-800">
+                  8. Công ty còn phải hoàn
                 </div>
-                <div className="text-2xl font-black text-rose-700 mt-1.5">
+                <div className="text-xl font-black text-rose-700 mt-1">
                   {formatVnd(monthlyReport.payerRemainingBalanceVnd)}
                 </div>
-                <div className="text-xs text-rose-700 mt-1">
-                  = Đủ điều kiện hoàn − Đã hoàn xác nhận
+                <div className="text-[11px] text-rose-700 mt-0.5">
+                  = Đủ ĐK hoàn − Đã hoàn
                 </div>
               </div>
             </div>
 
-            {/* Biểu đồ trực quan: Chi phí theo ngày & So sánh Ăn trưa vs Ăn tối */}
+            {/* Bữa ăn gần nhất (Siêu gọn) & Thống kê nhân sự */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-              {/* Biểu đồ 1: Chi phí theo ngày diễn ra bữa ăn */}
-              <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                      <BarChart3 className="w-4 h-4 text-teal-600" />
-                      Biểu đồ Chi phí theo Ngày diễn ra bữa ăn trong kỳ
+              {/* Cột trái: Danh sách bữa ăn siêu gọn */}
+              <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs">
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                      Bữa ăn trong kỳ ({filteredMeals.length})
                     </h3>
-                    <p className="text-xs text-slate-500">
-                      Tách màu giữa Ăn trưa (Leadership Lunch) và Ăn tối thứ Năm (Game Strategy Dinner)
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs">
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-3 h-3 rounded-xs bg-teal-600 inline-block" /> Ăn trưa
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-3 h-3 rounded-xs bg-indigo-600 inline-block" /> Ăn tối T5
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-500">
+                      Giao diện Bảng siêu gọn
                     </span>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClickSound();
+                      setActiveTab('MEALS');
+                    }}
+                    className="text-xs font-bold text-teal-700 hover:underline"
+                  >
+                    Xem tất cả →
+                  </button>
                 </div>
 
-                {dailyChartData.length === 0 ? (
-                  <div className="h-44 flex items-center justify-center text-xs text-slate-400 bg-slate-50 rounded-xl">
-                    Không có bữa ăn nào trong bộ lọc hiện tại.
-                  </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {dailyChartData.map((d) => {
-                      const totalDay = d.lunchVnd + d.dinnerVnd;
-                      const maxRef = Math.max(
-                        ...dailyChartData.map((x) => x.lunchVnd + x.dinnerVnd),
-                        1
-                      );
-                      const lunchPct = Math.round((d.lunchVnd / maxRef) * 100);
-                      const dinnerPct = Math.round((d.dinnerVnd / maxRef) * 100);
-                      return (
-                        <div key={d.date} className="grid grid-cols-12 items-center gap-2 text-xs">
-                          <div className="col-span-3 sm:col-span-2 font-semibold text-slate-700">
-                            {formatDateVN(d.date)}
-                          </div>
-                          <div className="col-span-6 sm:col-span-7 bg-slate-100 rounded-lg h-6 flex overflow-hidden p-0.5">
-                            {d.lunchVnd > 0 && (
-                              <div
-                                style={{ width: `${Math.max(lunchPct, 6)}%` }}
-                                className="bg-teal-600 h-full rounded-l-md transition-all"
-                                title={`Ăn trưa: ${formatVnd(d.lunchVnd)}`}
-                              />
-                            )}
-                            {d.dinnerVnd > 0 && (
-                              <div
-                                style={{ width: `${Math.max(dinnerPct, 6)}%` }}
-                                className="bg-indigo-600 h-full rounded-r-md transition-all"
-                                title={`Ăn tối: ${formatVnd(d.dinnerVnd)}`}
-                              />
-                            )}
-                          </div>
-                          <div className="col-span-3 text-right font-bold text-slate-900">
-                            {formatVnd(totalDay)}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                {renderCompactMealsTable(filteredMeals.slice(0, 10))}
               </div>
 
-              {/* Biểu đồ 2: Cơ cấu Ăn trưa vs Ăn tối & Kiểm tra cân đối (Mục 13.1) */}
-              <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs flex flex-col justify-between space-y-4">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 mb-2">
-                    So sánh 2 Chương trình trong kỳ
+              {/* Cột phải: Thống kê 8 thành viên BOD gọn */}
+              <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs">
+                <div className="flex items-center justify-between mb-2.5">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                    Thống kê 8 Thành viên BOD (Bấm để xem)
                   </h3>
-                  <div className="space-y-2.5">
-                    <div className="p-3 rounded-xl bg-teal-50/70 border border-teal-200">
-                      <div className="flex justify-between text-xs font-bold text-teal-900">
-                        <span>Leadership Lunch (Ăn trưa)</span>
-                        <span>{monthlyReport.lunchMeals} bữa</span>
-                      </div>
-                      <div className="text-lg font-extrabold text-teal-700 mt-0.5">
-                        {formatVnd(monthlyReport.lunchCostVnd)}
-                      </div>
-                    </div>
-
-                    <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-200">
-                      <div className="flex justify-between text-xs font-bold text-indigo-900">
-                        <span>Game Strategy Dinner (Tối T5)</span>
-                        <span>{monthlyReport.dinnerMeals} bữa</span>
-                      </div>
-                      <div className="text-lg font-extrabold text-indigo-700 mt-0.5">
-                        {formatVnd(monthlyReport.dinnerCostVnd)}
-                      </div>
-                    </div>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClickSound();
+                      setActiveTab('MEMBERS_STATS');
+                    }}
+                    className="text-xs font-bold text-teal-700 hover:underline"
+                  >
+                    Chi tiết →
+                  </button>
                 </div>
 
-                {/* Bộ kiểm tra cân đối mỗi tháng (Mục 13.1) */}
-                <div className="pt-3 border-t border-slate-200">
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">
-                    Kiểm tra cân đối tự động (Mục 13.1 PRD)
-                  </div>
-                  <div className="space-y-1.5">
-                    {monthlyReport.balanceChecks.map((chk) => (
-                      <div
-                        key={chk.id}
-                        className="flex items-center justify-between text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200"
-                        title={chk.detail}
-                      >
-                        <span className="text-slate-700 truncate pr-2">{chk.label}</span>
-                        {chk.passed ? (
-                          <span className="text-emerald-700 font-bold shrink-0">✓ Khớp</span>
-                        ) : (
-                          <span className="text-rose-700 font-bold shrink-0">! Lệch</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Bảng Thống kê Nhân sự tóm tắt ngay trên Dashboard (Mục 7.2) */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Thống kê Tham gia & Chi phí Phân bổ theo Nhân sự (Bấm vào từng người để xem chi tiết bữa ăn)
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Tỷ lệ tham gia = Số buổi tham gia / Số buổi thực tế diễn ra trong thời gian thành viên có hiệu lực.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('MEMBERS_STATS')}
-                  className="text-xs font-bold text-teal-700 hover:underline"
-                >
-                  Mở trang phân tích nhân sự đầy đủ →
-                </button>
-              </div>
-
-              <div className="border border-slate-200 rounded-xl overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-600 border-b border-slate-200">
-                      <th className="py-2.5 px-3">Họ và tên</th>
-                      <th className="py-2.5 px-3">Chức danh</th>
-                      <th className="py-2.5 px-3 text-center">Ăn trưa</th>
-                      <th className="py-2.5 px-3 text-center">Ăn tối</th>
-                      <th className="py-2.5 px-3 text-center">Tổng lượt</th>
-                      <th className="py-2.5 px-3 text-center">Đủ ĐK (Mẫu số)</th>
-                      <th className="py-2.5 px-3 text-center">Tỷ lệ tham gia</th>
-                      <th className="py-2.5 px-3 text-right">Chi phí phân bổ</th>
-                      <th className="py-2.5 px-3 text-right">BQ / lượt</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {monthlyReport.memberRows.map((row) => (
-                      <tr
-                        key={row.member.id}
-                        onClick={() => setDrilldownMemberRow(row)}
-                        className="hover:bg-teal-50/50 cursor-pointer transition"
-                      >
-                        <td className="py-2.5 px-3 font-bold text-slate-900">
-                          {row.member.fullName}
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-500">
-                          {row.member.title || (
-                            <span className="italic text-slate-400">Chưa cung cấp</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 text-center font-medium">
-                          {row.lunchAttended}
-                        </td>
-                        <td className="py-2.5 px-3 text-center font-medium">
-                          {row.dinnerAttended}
-                        </td>
-                        <td className="py-2.5 px-3 text-center font-extrabold text-slate-900">
-                          {row.totalAttended} lượt
-                        </td>
-                        <td className="py-2.5 px-3 text-center text-slate-600">
-                          {row.eligibleSessions} buổi
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          {row.attendanceRatePct !== null ? (
-                            <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 font-bold">
-                              {row.totalAttended}/{row.eligibleSessions} — {row.attendanceRatePct}%
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 font-bold">—</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-bold text-indigo-700">
-                          {formatVnd(row.allocatedCostVnd)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right text-slate-600">
-                          {formatVnd(row.avgCostPerVisitVnd)}
-                        </td>
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-[11px]">
+                        <th className="py-1.5 px-2.5">Thành viên</th>
+                        <th className="py-1.5 px-2 text-center">Lượt</th>
+                        <th className="py-1.5 px-2 text-center">Tỷ lệ</th>
+                        <th className="py-1.5 px-2.5 text-right">Phân bổ</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Bảng Bữa ăn gần nhất trên Dashboard (Mục 7.2) */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Bữa ăn trong kỳ ({filteredMeals.length} bữa)
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Bấm vào một bữa ăn để xem chi tiết điểm danh, phân bổ từng người, ảnh chứng từ hoặc phê duyệt.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('MEALS')}
-                  className="text-xs font-bold text-teal-700 hover:underline"
-                >
-                  Quản lý toàn bộ bữa ăn →
-                </button>
-              </div>
-
-              <div className="border border-slate-200 rounded-xl overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-600 border-b border-slate-200">
-                      <th className="py-2.5 px-3">Mã / Ngày giờ (UTC+7)</th>
-                      <th className="py-2.5 px-3">Chương trình</th>
-                      <th className="py-2.5 px-3">Địa điểm / Quán</th>
-                      <th className="py-2.5 px-3">Người tham gia</th>
-                      <th className="py-2.5 px-3 text-right">Tổng tiền</th>
-                      <th className="py-2.5 px-3 text-center">Chứng từ</th>
-                      <th className="py-2.5 px-3 text-center">Trạng thái</th>
-                      <th className="py-2.5 px-3 text-center">Hoàn ứng</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {filteredMeals.map((meal) => {
-                      const prog = state.programs.find((p) => p.id === meal.programId);
-                      const attendees = state.attendance.filter(
-                        (a) => a.mealId === meal.id && a.attended
-                      );
-                      const atts = state.attachments.filter((a) => a.mealId === meal.id);
-                      const rInfo = reimbMap[meal.id];
-                      return (
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {monthlyReport.memberRows.map((row) => (
                         <tr
-                          key={meal.id}
+                          key={row.member.id}
                           onClick={() => {
-                            setEditingMeal(meal);
-                            setIsMealModalOpen(true);
+                            playClickSound();
+                            setDrilldownMemberRow(row);
                           }}
-                          className="hover:bg-slate-50 cursor-pointer transition"
+                          className="hover:bg-teal-50/50 cursor-pointer transition"
                         >
-                          <td className="py-2.5 px-3">
-                            <div className="font-bold text-slate-900">{meal.code}</div>
-                            <div className="text-[11px] text-slate-500">
-                              {formatDateTimeVN(meal.occurredAt)}
+                          <td className="py-1.5 px-2.5">
+                            <div className="font-bold text-slate-900">
+                              {row.member.fullName}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              {row.member.title || 'Thành viên'}
                             </div>
                           </td>
-                          <td className="py-2.5 px-3">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                                prog?.code === 'LEADERSHIP_LUNCH'
-                                  ? 'bg-teal-50 text-teal-800'
-                                  : 'bg-indigo-50 text-indigo-800'
-                              }`}
-                            >
-                              {prog?.shortName || meal.programId}
-                            </span>
+                          <td className="py-1.5 px-2 text-center font-bold text-slate-800">
+                            {row.totalAttended}
                           </td>
-                          <td className="py-2.5 px-3">
-                            <div className="font-bold text-slate-900">{meal.venue}</div>
-                            {meal.note && (
-                              <div className="text-[11px] text-slate-500 truncate max-w-xs">
-                                {meal.note}
-                              </div>
+                          <td className="py-1.5 px-2 text-center">
+                            {row.attendanceRatePct !== null ? (
+                              <span className="px-1.5 py-0.5 rounded bg-teal-50 text-teal-800 font-bold text-[10px]">
+                                {row.totalAttended}/{row.eligibleSessions} (
+                                {row.attendanceRatePct}%)
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 font-bold">—</span>
                             )}
                           </td>
-                          <td className="py-2.5 px-3 font-semibold text-slate-700">
-                            {attendees.length} người
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-extrabold text-slate-900">
-                            {formatVnd(meal.totalPaidVnd)}
-                          </td>
-                          <td className="py-2.5 px-3 text-center">
-                            <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
-                              {atts.length} file
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-3 text-center">
-                            {renderStatusBadge(meal.status)}
-                          </td>
-                          <td className="py-2.5 px-3 text-center">
-                            {renderReimbBadge(rInfo?.status || 'NOT_ELIGIBLE')}
+                          <td className="py-1.5 px-2.5 text-right font-bold text-indigo-700">
+                            {formatVnd(row.allocatedCostVnd)}
                           </td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
         )}
 
         {/* ===================================================================
-            TAB 2: QUẢN LÝ BỮA ĂN & TRA CỨU LỊCH SỬ CHI TIẾT (F03, F04, F05, F10)
+            TAB 2: BỮA ĂN — CHẾ ĐỘ BẢNG SIÊU GỌN MẬT ĐỘ CAO + PHÂN TRANG
            =================================================================== */}
         {activeTab === 'MEALS' && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900">
-                    Danh sách Bữa ăn & Tra cứu Lịch sử Chi tiết ({filteredMeals.length} bữa)
+          <div className="space-y-3 animate-slide-up">
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs">
+              {/* Thanh công cụ gọn trên 1 hàng */}
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-bold text-slate-900">
+                    Danh sách Bữa ăn Siêu gọn ({filteredMeals.length} bữa • Tổng:{' '}
+                    <span className="text-teal-700">
+                      {formatVnd(monthlyReport.totalGroupCostVnd)}
+                    </span>
+                    )
                   </h2>
-                  <p className="text-xs text-slate-500">
-                    Tìm kiếm theo tên quán, mã bữa, ghi chú, số tiền hoặc lọc khoảng ngày cụ thể.
-                  </p>
                 </div>
 
-                {role !== 'VIEWER' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingMeal(null);
-                      setIsMealModalOpen(true);
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
+                    <input
+                      type="text"
+                      placeholder="Tìm quán, mã bữa, số tiền..."
+                      value={filters.venueQuery}
+                      onChange={(e) => {
+                        setMealPage(1);
+                        setFilters((f) => ({ ...f, venueQuery: e.target.value }));
+                      }}
+                      className="w-48 sm:w-60 pl-8 pr-2.5 py-1 rounded-lg border border-slate-300 text-xs"
+                    />
+                  </div>
+
+                  <select
+                    value={mealPageSize}
+                    onChange={(e) => {
+                      setMealPage(1);
+                      setMealPageSize(Number(e.target.value));
                     }}
-                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold flex items-center gap-1.5 self-start"
+                    className="px-2 py-1 rounded-lg border border-slate-300 text-xs bg-slate-50 font-semibold"
                   >
-                    <Plus className="w-4 h-4" />
-                    Thêm bữa ăn mới
-                  </button>
-                )}
-              </div>
+                    <option value={15}>15 dòng/trang</option>
+                    <option value={25}>25 dòng/trang</option>
+                    <option value={50}>50 dòng/trang</option>
+                    <option value={100}>100 dòng/trang</option>
+                  </select>
 
-              {/* Thanh tìm kiếm chi tiết (F10) */}
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 mb-4">
-                <div className="sm:col-span-6 relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-2.5" />
-                  <input
-                    type="text"
-                    placeholder="Tìm tên quán, mã bữa (VD: B-202610-001), nội dung ghi chú, số tiền..."
-                    value={filters.venueQuery}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, venueQuery: e.target.value }))
-                    }
-                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-xs"
-                  />
-                </div>
-                <div className="sm:col-span-3 flex items-center gap-1.5">
-                  <span className="text-[11px] font-semibold text-slate-500 shrink-0">
-                    Từ ngày:
-                  </span>
-                  <input
-                    type="date"
-                    value={filters.dateFrom || ''}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, dateFrom: e.target.value }))
-                    }
-                    className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 text-xs"
-                  />
-                </div>
-                <div className="sm:col-span-3 flex items-center gap-1.5">
-                  <span className="text-[11px] font-semibold text-slate-500 shrink-0">
-                    Đến ngày:
-                  </span>
-                  <input
-                    type="date"
-                    value={filters.dateTo || ''}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, dateTo: e.target.value }))
-                    }
-                    className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 text-xs"
-                  />
+                  {role !== 'VIEWER' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playClickSound();
+                        setEditingMeal(null);
+                        setIsMealModalOpen(true);
+                      }}
+                      className="px-3 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold flex items-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Thêm bữa
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {filteredMeals.length === 0 ? (
-                <div className="p-10 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
-                  Không tìm thấy bữa ăn nào khớp với bộ lọc hiện tại.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {filteredMeals.map((meal) => {
-                    const prog = state.programs.find((p) => p.id === meal.programId);
-                    const payer = state.members.find(
-                      (m) => m.id === meal.payerMemberId
-                    );
-                    const attendeeMembers = state.attendance
-                      .filter((a) => a.mealId === meal.id && a.attended)
-                      .map((a) =>
-                        state.members.find((m) => m.id === a.memberId)
-                      )
-                      .filter(Boolean) as Member[];
-                    const atts = state.attachments.filter(
-                      (a) => a.mealId === meal.id
-                    );
-                    const rInfo = reimbMap[meal.id];
+              {/* Bảng dữ liệu mật độ cao */}
+              {renderCompactMealsTable(paginatedMeals)}
 
-                    return (
-                      <div
-                        key={meal.id}
-                        className="p-4 rounded-2xl border border-slate-200 hover:border-teal-400 bg-white transition shadow-2xs"
-                      >
-                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                          <div className="space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="px-2.5 py-0.5 rounded-lg bg-slate-900 text-white text-xs font-extrabold">
-                                {meal.code}
-                              </span>
-                              <span
-                                className={`px-2.5 py-0.5 rounded-lg text-xs font-bold ${
-                                  prog?.code === 'LEADERSHIP_LUNCH'
-                                    ? 'bg-teal-50 text-teal-800 border border-teal-200'
-                                    : 'bg-indigo-50 text-indigo-800 border border-indigo-200'
-                                }`}
-                              >
-                                {prog?.shortName}
-                              </span>
-                              {renderStatusBadge(meal.status)}
-                              {renderReimbBadge(rInfo?.status || 'NOT_ELIGIBLE')}
-                              <span className="text-xs text-slate-500">
-                                🕒 {formatDateTimeVN(meal.occurredAt)} (UTC+7)
-                              </span>
-                            </div>
-
-                            <div className="text-base font-bold text-slate-900 pt-0.5">
-                              {meal.venue}
-                            </div>
-
-                            {meal.note && (
-                              <div className="text-xs text-slate-600">{meal.note}</div>
-                            )}
-
-                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                              <span className="text-[11px] font-bold text-slate-500">
-                                Có mặt ({attendeeMembers.length}):
-                              </span>
-                              {attendeeMembers.map((m) => (
-                                <span
-                                  key={m.id}
-                                  className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-medium"
-                                >
-                                  {m.fullName}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-row lg:flex-col items-center lg:items-end justify-between gap-2 shrink-0 border-t lg:border-t-0 pt-2.5 lg:pt-0 border-slate-100">
-                            <div className="text-right">
-                              <div className="text-lg font-black text-teal-700">
-                                {formatVnd(meal.totalPaidVnd)}
-                              </div>
-                              <div className="text-[11px] text-slate-500">
-                                Ứng bởi: <strong>{payer?.fullName}</strong> •{' '}
-                                {atts.length} chứng từ
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              {(role === 'ADMIN' || role === 'FINANCE') &&
-                                meal.status === 'SUBMITTED' && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleApproveOrRejectMeal(meal.id, 'APPROVED')
-                                    }
-                                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1"
-                                  >
-                                    <CheckCircle2 className="w-3.5 h-3.5" />
-                                    Duyệt ngay
-                                  </button>
-                                )}
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingMeal(meal);
-                                  setIsMealModalOpen(true);
-                                }}
-                                className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold flex items-center gap-1"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                                Xem / Sửa
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+              {/* Thanh phân trang gọn */}
+              {filteredMeals.length > mealPageSize && (
+                <div className="mt-3 flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Hiển thị trang <strong>{mealPage}</strong> /{' '}
+                    <strong>{totalMealPages}</strong> ({filteredMeals.length} bữa ăn)
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={mealPage <= 1}
+                      onClick={() => {
+                        playClickSound();
+                        setMealPage((p) => Math.max(1, p - 1));
+                      }}
+                      className="px-2.5 py-1 rounded border border-slate-300 bg-white disabled:opacity-40 font-semibold"
+                    >
+                      ← Trước
+                    </button>
+                    <button
+                      type="button"
+                      disabled={mealPage >= totalMealPages}
+                      onClick={() => {
+                        playClickSound();
+                        setMealPage((p) => Math.min(totalMealPages, p + 1));
+                      }}
+                      className="px-2.5 py-1 rounded border border-slate-300 bg-white disabled:opacity-40 font-semibold"
+                    >
+                      Sau →
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1667,21 +1624,21 @@ export default function HorusMealsApp() {
             TAB 3: THỐNG KÊ THÀNH VIÊN (Mục 7.3 & F08)
            =================================================================== */}
         {activeTab === 'MEMBERS_STATS' && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+          <div className="space-y-4 animate-slide-up">
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-3">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-900">
+                  <h2 className="text-sm font-bold text-slate-900">
                     Bảng Xếp hạng Tần suất Tham gia, Tỷ lệ & Chi phí Phân bổ Cá nhân (F08)
                   </h2>
-                  <p className="text-xs text-slate-500">
-                    Bấm vào bất kỳ nhân sự nào để mở <strong>Hồ sơ thống kê tháng</strong> và danh sách các bữa ăn cụ thể của người đó.
+                  <p className="text-[11px] text-slate-500">
+                    Bấm vào một nhân sự để xem danh sách các bữa ăn cụ thể trong kỳ.
                   </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
                   {filters.programId !== 'ALL' && (
-                    <label className="inline-flex items-center gap-1.5 text-xs bg-slate-100 px-3 py-1.5 rounded-xl cursor-pointer">
+                    <label className="inline-flex items-center gap-1.5 text-xs bg-slate-100 px-2.5 py-1 rounded-lg cursor-pointer">
                       <input
                         type="checkbox"
                         checked={onlyProgramMembersFilter}
@@ -1694,21 +1651,24 @@ export default function HorusMealsApp() {
                     </label>
                   )}
 
-                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+                  <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg">
                     <ArrowUpDown className="w-3.5 h-3.5 text-slate-500 ml-1.5" />
                     {(
                       [
-                        { id: 'VISITS', label: 'Theo số lượt' },
-                        { id: 'RATE', label: 'Theo tỷ lệ %' },
-                        { id: 'COST', label: 'Theo chi phí' },
-                        { id: 'NAME', label: 'Theo tên' },
+                        { id: 'VISITS', label: 'Số lượt' },
+                        { id: 'RATE', label: 'Tỷ lệ %' },
+                        { id: 'COST', label: 'Chi phí' },
+                        { id: 'NAME', label: 'Tên' },
                       ] as const
                     ).map((s) => (
                       <button
                         key={s.id}
                         type="button"
-                        onClick={() => setMemberSortBy(s.id)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
+                        onClick={() => {
+                          playClickSound();
+                          setMemberSortBy(s.id);
+                        }}
+                        className={`px-2 py-1 rounded-md text-[11px] font-bold transition ${
                           memberSortBy === s.id
                             ? 'bg-slate-900 text-white'
                             : 'text-slate-600 hover:bg-white'
@@ -1724,80 +1684,67 @@ export default function HorusMealsApp() {
               <div className="border border-slate-200 rounded-xl overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
-                    <tr className="bg-slate-100 text-slate-600 border-b border-slate-200">
-                      <th className="py-3 px-3 text-center w-12">Hạng</th>
-                      <th className="py-3 px-3">Nhân sự</th>
-                      <th className="py-3 px-3">Chức danh</th>
-                      <th className="py-3 px-3 text-center">Số buổi Trưa</th>
-                      <th className="py-3 px-3 text-center">Số buổi Tối</th>
-                      <th className="py-3 px-3 text-center">Tần suất tháng</th>
-                      <th className="py-3 px-3 text-center">
-                        Tỷ lệ tham gia (Tham dự / Đủ ĐK)
+                    <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-[11px]">
+                      <th className="py-2 px-3 text-center w-10">#</th>
+                      <th className="py-2 px-3">Nhân sự</th>
+                      <th className="py-2 px-3">Chức danh</th>
+                      <th className="py-2 px-3 text-center">Ăn trưa</th>
+                      <th className="py-2 px-3 text-center">Ăn tối</th>
+                      <th className="py-2 px-3 text-center">Tần suất</th>
+                      <th className="py-2 px-3 text-center">
+                        Tỷ lệ (Tham dự / Đủ ĐK)
                       </th>
-                      <th className="py-3 px-3 text-right">Chi phí phân bổ</th>
-                      <th className="py-3 px-3 text-right">Chi phí TB / lượt</th>
-                      <th className="py-3 px-3 text-center">Drill-down</th>
+                      <th className="py-2 px-3 text-right">Chi phí phân bổ</th>
+                      <th className="py-2 px-3 text-right">TB / lượt</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200">
+                  <tbody className="divide-y divide-slate-100">
                     {sortedMemberRows.map((row, idx) => (
                       <tr
                         key={row.member.id}
-                        onClick={() => setDrilldownMemberRow(row)}
+                        onClick={() => {
+                          playClickSound();
+                          setDrilldownMemberRow(row);
+                        }}
                         className="hover:bg-teal-50/60 cursor-pointer transition"
                       >
-                        <td className="py-3 px-3 text-center font-bold text-slate-500">
-                          #{idx + 1}
+                        <td className="py-2 px-3 text-center font-bold text-slate-400">
+                          {idx + 1}
                         </td>
-                        <td className="py-3 px-3 font-bold text-slate-900">
+                        <td className="py-2 px-3 font-bold text-slate-900">
                           {row.member.fullName}
                         </td>
-                        <td className="py-3 px-3 text-slate-500">
+                        <td className="py-2 px-3 text-slate-500">
                           {row.member.title || (
                             <span className="italic text-slate-400">
                               Chưa cung cấp
                             </span>
                           )}
                         </td>
-                        <td className="py-3 px-3 text-center font-semibold text-teal-700">
+                        <td className="py-2 px-3 text-center font-semibold text-teal-700">
                           {row.lunchAttended}
                         </td>
-                        <td className="py-3 px-3 text-center font-semibold text-indigo-700">
+                        <td className="py-2 px-3 text-center font-semibold text-indigo-700">
                           {row.dinnerAttended}
                         </td>
-                        <td className="py-3 px-3 text-center font-extrabold text-slate-900">
-                          {row.totalAttended} lần / tháng
+                        <td className="py-2 px-3 text-center font-extrabold text-slate-900">
+                          {row.totalAttended} lần
                         </td>
-                        <td className="py-3 px-3 text-center">
+                        <td className="py-2 px-3 text-center">
                           {row.attendanceRatePct !== null ? (
-                            <div className="inline-flex items-center gap-2">
-                              <span className="px-2.5 py-0.5 rounded-full bg-teal-100 text-teal-800 font-bold">
-                                {row.totalAttended}/{row.eligibleSessions} buổi —{' '}
-                                {row.attendanceRatePct}%
-                              </span>
-                            </div>
-                          ) : (
-                            <span
-                              className="text-slate-400 font-bold"
-                              title="Chưa có buổi đủ điều kiện (mẫu số = 0)"
-                            >
-                              —
+                            <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 font-bold text-[11px]">
+                              {row.totalAttended}/{row.eligibleSessions} —{' '}
+                              {row.attendanceRatePct}%
                             </span>
+                          ) : (
+                            <span className="text-slate-400 font-bold">—</span>
                           )}
                         </td>
-                        <td className="py-3 px-3 text-right font-extrabold text-indigo-700">
+                        <td className="py-2 px-3 text-right font-extrabold text-indigo-700">
                           {formatVnd(row.allocatedCostVnd)}
                         </td>
-                        <td className="py-3 px-3 text-right text-slate-600">
+                        <td className="py-2 px-3 text-right text-slate-600">
                           {formatVnd(row.avgCostPerVisitVnd)}
-                        </td>
-                        <td className="py-3 px-3 text-center">
-                          <button
-                            type="button"
-                            className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-teal-600 hover:text-white text-slate-700 font-semibold transition"
-                          >
-                            Xem bữa ăn
-                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1809,165 +1756,123 @@ export default function HorusMealsApp() {
         )}
 
         {/* ===================================================================
-            TAB 4: QUẢN LÝ HOÀN ỨNG & ĐỐI SOÁT CÔNG NỢ (F11)
+            TAB 4: HOÀN ỨNG (F11)
            =================================================================== */}
         {activeTab === 'REIMBURSEMENTS' && (
-          <ReimbursementSection
-            state={state}
-            filters={filters}
-            role={role}
-            currentUserName={currentUserName}
-            onCreateBatch={handleCreateBatch}
-            onRemoveItemFromBatch={handleRemoveItemFromBatch}
-            onVoidBatch={handleVoidBatch}
-            onConfirmPayment={handleConfirmPayment}
-            onInspectMeal={(meal) => {
-              setEditingMeal(meal);
-              setIsMealModalOpen(true);
-            }}
-          />
+          <div className="animate-slide-up">
+            <ReimbursementSection
+              state={state}
+              filters={filters}
+              role={role}
+              currentUserName={currentUserName}
+              onCreateBatch={handleCreateBatch}
+              onRemoveItemFromBatch={handleRemoveItemFromBatch}
+              onVoidBatch={handleVoidBatch}
+              onConfirmPayment={handleConfirmPayment}
+              onInspectMeal={(meal) => {
+                setEditingMeal(meal);
+                setIsMealModalOpen(true);
+              }}
+            />
+          </div>
         )}
 
         {/* ===================================================================
-            TAB 5: BÁO CÁO & XUẤT FILE (F12: Excel 4 Sheet, PDF A4, ZIP Chứng từ)
+            TAB 5: BÁO CÁO & XUẤT FILE (F12)
            =================================================================== */}
         {activeTab === 'EXPORTS' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-2xs">
-              <h2 className="text-lg font-bold text-slate-900">
+          <div className="space-y-4 animate-slide-up">
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
+              <h2 className="text-base font-bold text-slate-900">
                 Trung tâm Xuất Báo cáo Kế toán, Bảng kê Hoàn ứng & Lưu trữ Chứng từ (F12)
               </h2>
-              <p className="text-xs text-slate-500 mt-1">
-                Tất cả file xuất đều tự động đính kèm thời điểm xuất, bộ lọc áp dụng, người xuất, phiên bản dữ liệu <code>v{state.version}</code> và quy tắc chống cộng trùng.
+              <p className="text-xs text-slate-500 mt-0.5">
+                Phiên bản dữ liệu hiện tại: <code>v{state.version}</code> • Chống cộng trùng 3 hệ số liệu.
               </p>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
-                {/* Box 1: Excel 4 sheets */}
-                <div className="p-5 rounded-2xl border border-emerald-200 bg-emerald-50/40 flex flex-col justify-between space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/40 flex flex-col justify-between space-y-3">
                   <div>
-                    <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center mb-3">
-                      <FileSpreadsheet className="w-5 h-5" />
-                    </div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      1. Xuất Bảng kê Excel (.xlsx) chuẩn 4 Sheet (AC-16)
+                    <h3 className="text-xs font-bold text-slate-900">
+                      1. Xuất Excel (.xlsx) 4 Sheet (AC-16)
                     </h3>
-                    <ul className="text-xs text-slate-600 space-y-1 mt-2 list-disc list-inside">
-                      <li>
-                        <code>Tong_quan_thang</code>: KPI & Bộ kiểm tra cân đối
-                      </li>
-                      <li>
-                        <code>Danh_sach_bua_an</code>: Chi tiết từng bữa & chứng từ
-                      </li>
-                      <li>
-                        <code>Thong_ke_nhan_su</code>: Lượt, tỷ lệ & phân bổ cá nhân
-                      </li>
-                      <li>
-                        <code>Hoan_ung</code>: Đợt hoàn, giao dịch & dư nợ
-                      </li>
-                    </ul>
+                    <p className="text-[11px] text-slate-600 mt-1">
+                      Gồm 4 sheet: <code>Tong_quan_thang</code>, <code>Danh_sach_bua_an</code>, <code>Thong_ke_nhan_su</code>, <code>Hoan_ung</code>.
+                    </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() =>
-                      exportMonthlyExcel(state, filters, currentUserName, role)
-                    }
-                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs"
+                    onClick={() => {
+                      playClickSound();
+                      exportMonthlyExcel(state, filters, currentUserName, role);
+                    }}
+                    className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
                   >
-                    <Download className="w-4 h-4" />
-                    Tải xuống Excel (.xlsx)
+                    <Download className="w-3.5 h-3.5" /> Tải xuống Excel (.xlsx)
                   </button>
                 </div>
 
-                {/* Box 2: PDF Bảng kê trình ký */}
-                <div className="p-5 rounded-2xl border border-blue-200 bg-blue-50/40 flex flex-col justify-between space-y-4">
+                <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/40 flex flex-col justify-between space-y-3">
                   <div>
-                    <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center mb-3">
-                      <Printer className="w-5 h-5" />
-                    </div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      2. Xuất PDF Bảng kê Hoàn ứng & Phụ lục Chứng từ (AC-17)
+                    <h3 className="text-xs font-bold text-slate-900">
+                      2. Xuất PDF Bảng kê Hoàn ứng A4 (AC-17)
                     </h3>
-                    <p className="text-xs text-slate-600 mt-2">
-                      Định dạng trang in A4 gồm bảng tổng hợp theo kỳ, danh sách các khoản ứng của anh Doãn Thế Cường, chữ ký Người đề nghị / Kế toán / CEO và phụ lục ảnh chứng từ.
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openReimbursementPdfPrintWindow(state, {
-                          filters,
-                          includeAttachmentImages: true,
-                          exporterName: currentUserName,
-                          role,
-                        })
-                      }
-                      className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs"
-                    >
-                      <Printer className="w-4 h-4" />
-                      In / Lưu PDF (Kèm ảnh chứng từ)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openReimbursementPdfPrintWindow(state, {
-                          filters,
-                          includeAttachmentImages: false,
-                          exporterName: currentUserName,
-                          role,
-                        })
-                      }
-                      className="w-full py-2 px-4 rounded-xl bg-white border border-blue-300 text-blue-800 text-xs font-semibold hover:bg-blue-50"
-                    >
-                      In / Lưu PDF (Chỉ bảng kê tóm tắt)
-                    </button>
-                  </div>
-                </div>
-
-                {/* Box 3: ZIP Chứng từ */}
-                <div className="p-5 rounded-2xl border border-indigo-200 bg-indigo-50/40 flex flex-col justify-between space-y-4">
-                  <div>
-                    <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center mb-3">
-                      <Archive className="w-5 h-5" />
-                    </div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      3. Xuất Gói ZIP Ảnh Chứng từ & Manifest CSV/JSON
-                    </h3>
-                    <p className="text-xs text-slate-600 mt-2">
-                      Đóng gói toàn bộ file ảnh thanh toán và hóa đơn trong kỳ, đặt tên theo mã bữa ăn (<code>B-202610-001_PAYMENT_PROOF...</code>) kèm file <code>manifest.csv</code> để kế toán đối chiếu.
+                    <p className="text-[11px] text-slate-600 mt-1">
+                      Bảng kê trình ký hoàn ứng chuẩn A4 kèm khung chữ ký và phụ lục ảnh chứng từ.
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      playClickSound();
+                      openReimbursementPdfPrintWindow(state, {
+                        filters,
+                        includeAttachmentImages: true,
+                        exporterName: currentUserName,
+                        role,
+                      });
+                    }}
+                    className="w-full py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
+                  >
+                    <Printer className="w-3.5 h-3.5" /> In / Lưu PDF Bảng kê
+                  </button>
+                </div>
+
+                <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/40 flex flex-col justify-between space-y-3">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900">
+                      3. Xuất Gói ZIP Ảnh Chứng từ
+                    </h3>
+                    <p className="text-[11px] text-slate-600 mt-1">
+                      Đóng gói ảnh thanh toán & hóa đơn kèm <code>manifest.csv</code> và <code>manifest.json</code>.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClickSound();
                       exportAttachmentsZip(state, {
                         filters,
                         exporterName: currentUserName,
                         role,
-                      })
-                    }
-                    className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs"
+                      });
+                    }}
+                    className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
                   >
-                    <Archive className="w-4 h-4" />
-                    Tải xuống Gói ZIP Chứng từ
+                    <Archive className="w-3.5 h-3.5" /> Tải xuống ZIP Chứng từ
                   </button>
                 </div>
               </div>
 
-              {/* Sao lưu / Khôi phục JSON toàn hệ thống */}
-              <div className="mt-6 pt-5 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                    Sao lưu & Di chuyển Dữ liệu Toàn hệ thống (JSON Snapshot)
-                  </h4>
-                  <p className="text-xs text-slate-500">
-                    Tải xuống toàn bộ cơ sở dữ liệu hiện tại hoặc khôi phục từ file JSON đã xuất.
-                  </p>
-                </div>
+              <div className="mt-5 pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-700">
+                  Sao lưu & Khôi phục JSON Toàn hệ thống:
+                </span>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
+                      playClickSound();
                       const blob = new Blob([JSON.stringify(state, null, 2)], {
                         type: 'application/json',
                       });
@@ -1977,13 +1882,13 @@ export default function HorusMealsApp() {
                       a.download = `horus_meals_backup_v${state.version}.json`;
                       a.click();
                     }}
-                    className="px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-800 flex items-center gap-1.5"
+                    className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-800 flex items-center gap-1"
                   >
-                    <Download className="w-3.5 h-3.5" /> Xuất JSON Backup
+                    <Download className="w-3.5 h-3.5" /> Xuất JSON
                   </button>
                   {role !== 'VIEWER' && (
-                    <label className="px-3.5 py-2 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-800 cursor-pointer flex items-center gap-1.5">
-                      <Upload className="w-3.5 h-3.5" /> Nhập JSON Backup
+                    <label className="px-3 py-1.5 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-800 cursor-pointer flex items-center gap-1">
+                      <Upload className="w-3.5 h-3.5" /> Nhập JSON
                       <input
                         type="file"
                         accept="application/json"
@@ -1999,46 +1904,51 @@ export default function HorusMealsApp() {
         )}
 
         {/* ===================================================================
-            TAB 6: QUẢN TRỊ NHÂN SỰ, CHƯƠNG TRÌNH & AUDIT LOG (F01, F02, Mục 14)
+            TAB 6: QUẢN TRỊ & AUDIT LOG
            =================================================================== */}
         {activeTab === 'ADMIN' && (
-          <AdminSection
-            state={state}
-            role={role}
-            currentUserName={currentUserName}
-            onUpdateState={(updater, summary) => {
-              const updated = updater(state);
-              updated.auditLogs = [
-                {
-                  id: `audit-${Date.now()}`,
-                  actorRole: role,
-                  actorName: currentUserName,
-                  entityType: 'SETTINGS',
-                  entityId: 'admin',
-                  action: 'ADMIN_CONFIG_UPDATE',
-                  summary,
-                  createdAt: new Date().toISOString(),
-                },
-                ...updated.auditLogs,
-              ];
-              persistStateToServer(updated, summary);
-            }}
-            onResetToSampleData={() => {
-              const seed = createInitialSeedState();
-              seed.version = state.version + 1;
-              persistStateToServer(
-                seed,
-                'Khôi phục bộ dữ liệu mẫu tháng 10/2026 chuẩn PRD'
-              );
-            }}
-            onClearTransactionsOnly={() => {
-              const clean = createCleanProductionState(state);
-              persistStateToServer(
-                clean,
-                'Làm sạch giao dịch mẫu, giữ nguyên 8 thành viên BOD và 2 chương trình'
-              );
-            }}
-          />
+          <div className="animate-slide-up">
+            <AdminSection
+              state={state}
+              role={role}
+              currentUserName={currentUserName}
+              onUpdateState={(updater, summary) => {
+                playSuccessSound();
+                const updated = updater(state);
+                updated.auditLogs = [
+                  {
+                    id: `audit-${Date.now()}`,
+                    actorRole: role,
+                    actorName: currentUserName,
+                    entityType: 'SETTINGS',
+                    entityId: 'admin',
+                    action: 'ADMIN_CONFIG_UPDATE',
+                    summary,
+                    createdAt: new Date().toISOString(),
+                  },
+                  ...updated.auditLogs,
+                ];
+                persistStateToServer(updated, summary);
+              }}
+              onResetToSampleData={() => {
+                playSuccessSound();
+                const demo = createDemoSampleState();
+                demo.version = state.version + 1;
+                persistStateToServer(
+                  demo,
+                  'Đã nạp bộ dữ liệu mẫu Demo tháng 10/2026'
+                );
+              }}
+              onClearTransactionsOnly={() => {
+                playSuccessSound();
+                const clean = createCleanProductionState(state);
+                persistStateToServer(
+                  clean,
+                  'Đã xóa sạch toàn bộ bữa ăn & hoàn ứng về 0đ (Giữ 8 thành viên BOD)'
+                );
+              }}
+            />
+          </div>
         )}
       </main>
 
@@ -2072,9 +1982,17 @@ export default function HorusMealsApp() {
         role={role}
         currentUserName={currentUserName}
         onCommitted={(updatedState) => {
+          playSuccessSound();
           setState(updatedState);
           setSyncStatus(`Đã Commit v${updatedState.version} lên Hệ thống`);
         }}
+      />
+
+      <TestingCenterModal
+        isOpen={isTestingModalOpen}
+        onClose={() => setIsTestingModalOpen(false)}
+        liveState={state}
+        currentFilters={filters}
       />
     </div>
   );

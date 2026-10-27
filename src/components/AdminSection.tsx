@@ -713,14 +713,14 @@ export default function AdminSection({
                 onClick={onClearTransactionsOnly}
                 className="px-3 py-1.5 rounded-xl border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold"
               >
-                Làm sạch bữa ăn mẫu (Giữ 8 thành viên BOD)
+                Làm sạch về 0đ (Giữ 8 thành viên BOD)
               </button>
               <button
                 type="button"
                 onClick={onResetToSampleData}
                 className="px-3 py-1.5 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold flex items-center gap-1"
               >
-                <RefreshCw className="w-3.5 h-3.5" /> Khôi phục dữ liệu mẫu tháng 10/2026
+                <RefreshCw className="w-3.5 h-3.5" /> Nạp thử dữ liệu mẫu (Demo)
               </button>
             </div>
           )}
