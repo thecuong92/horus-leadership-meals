@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import AdminSection from '@/components/AdminSection';
 import CommitModal from '@/components/CommitModal';
+import MealCalendarView from '@/components/MealCalendarView';
 import MealModal from '@/components/MealModal';
 import MemberDrilldownModal from '@/components/MemberDrilldownModal';
 import ReimbursementSection from '@/components/ReimbursementSection';
@@ -81,6 +82,7 @@ import {
 
 type NavTab =
   | 'DASHBOARD'
+  | 'CALENDAR'
   | 'MEALS'
   | 'MEMBERS_STATS'
   | 'REIMBURSEMENTS'
@@ -163,6 +165,11 @@ export default function HorusMealsApp() {
   // Modals
   const [isMealModalOpen, setIsMealModalOpen] = useState<boolean>(false);
   const [editingMeal, setEditingMeal] = useState<MealSession | null>(null);
+  const [mealModalPreset, setMealModalPreset] = useState<{
+    programId: string;
+    dateVN: string;
+    timeVN: string;
+  } | null>(null);
   const [drilldownMemberRow, setDrilldownMemberRow] =
     useState<MemberReportRow | null>(null);
   const [isCommitModalOpen, setIsCommitModalOpen] = useState<boolean>(false);
@@ -1024,6 +1031,7 @@ export default function HorusMealsApp() {
                 onClick={() => {
                   playClickSound();
                   setEditingMeal(null);
+                  setMealModalPreset(null);
                   setIsMealModalOpen(true);
                 }}
                 className="px-3 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-extrabold flex items-center gap-1 shadow-sm transition active:scale-95"
@@ -1046,28 +1054,33 @@ export default function HorusMealsApp() {
                   icon: LayoutDashboard,
                 },
                 {
+                  id: 'CALENDAR',
+                  label: '2. Lịch Note Tiền (Trưa / Tối T5)',
+                  icon: Calendar,
+                },
+                {
                   id: 'MEALS',
-                  label: `2. Bữa ăn (${filteredMeals.length})`,
+                  label: `3. Bảng Bữa ăn (${filteredMeals.length})`,
                   icon: Utensils,
                 },
                 {
                   id: 'MEMBERS_STATS',
-                  label: '3. Thống kê thành viên',
+                  label: '4. Thống kê thành viên',
                   icon: Users,
                 },
                 {
                   id: 'REIMBURSEMENTS',
-                  label: '4. Hoàn ứng',
+                  label: '5. Hoàn ứng',
                   icon: Wallet,
                 },
                 {
                   id: 'EXPORTS',
-                  label: '5. Xuất báo cáo',
+                  label: '6. Xuất báo cáo',
                   icon: FileSpreadsheet,
                 },
                 {
                   id: 'ADMIN',
-                  label: '6. Quản trị & Audit',
+                  label: '7. Quản trị & Audit',
                   icon: Settings,
                 },
               ] as const
@@ -1417,6 +1430,29 @@ export default function HorusMealsApp() {
               </div>
             </div>
 
+            {/* Lịch Note Tiền (2 Màu: Xanh Teal Ăn trưa & Tím Indigo Ăn tối Thứ 5 + Cảnh báo ngày sót) */}
+            <MealCalendarView
+              state={state}
+              month={filters.month}
+              role={role}
+              onShiftMonth={(delta) =>
+                setFilters((f) => ({
+                  ...f,
+                  month: shiftMonth(f.month === 'ALL' ? '2026-10' : f.month, delta),
+                }))
+              }
+              onSelectMeal={(meal) => {
+                setEditingMeal(meal);
+                setMealModalPreset(null);
+                setIsMealModalOpen(true);
+              }}
+              onQuickAddMealForDate={(preset) => {
+                setEditingMeal(null);
+                setMealModalPreset(preset);
+                setIsMealModalOpen(true);
+              }}
+            />
+
             {/* Bữa ăn gần nhất (Siêu gọn) & Thống kê nhân sự */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
               {/* Cột trái: Danh sách bữa ăn siêu gọn */}
@@ -1514,6 +1550,35 @@ export default function HorusMealsApp() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ===================================================================
+            TAB 1B: LỊCH NOTE TIỀN (2 MÀU + KIỂM TRA SÓT NGÀY TRONG TUẦN / THÁNG)
+           =================================================================== */}
+        {activeTab === 'CALENDAR' && (
+          <div className="space-y-4 animate-slide-up">
+            <MealCalendarView
+              state={state}
+              month={filters.month}
+              role={role}
+              onShiftMonth={(delta) =>
+                setFilters((f) => ({
+                  ...f,
+                  month: shiftMonth(f.month === 'ALL' ? '2026-10' : f.month, delta),
+                }))
+              }
+              onSelectMeal={(meal) => {
+                setEditingMeal(meal);
+                setMealModalPreset(null);
+                setIsMealModalOpen(true);
+              }}
+              onQuickAddMealForDate={(preset) => {
+                setEditingMeal(null);
+                setMealModalPreset(preset);
+                setIsMealModalOpen(true);
+              }}
+            />
           </div>
         )}
 
@@ -1955,11 +2020,15 @@ export default function HorusMealsApp() {
       {/* Modals */}
       <MealModal
         isOpen={isMealModalOpen}
-        onClose={() => setIsMealModalOpen(false)}
+        onClose={() => {
+          setIsMealModalOpen(false);
+          setMealModalPreset(null);
+        }}
         state={state}
         role={role}
         currentUserName={currentUserName}
         editingMeal={editingMeal}
+        initialPreset={mealModalPreset}
         onSaveMeal={handleSaveMeal}
         onApproveOrRejectMeal={handleApproveOrRejectMeal}
       />

@@ -49,6 +49,11 @@ interface MealModalProps {
   role: RoleKey;
   currentUserName: string;
   editingMeal: MealSession | null;
+  initialPreset?: {
+    programId: string;
+    dateVN: string;
+    timeVN: string;
+  } | null;
   onSaveMeal: (payload: {
     meal: MealSession;
     attendeeIds: string[];
@@ -92,6 +97,7 @@ export default function MealModal({
   role,
   currentUserName,
   editingMeal,
+  initialPreset,
   onSaveMeal,
   onApproveOrRejectMeal,
 }: MealModalProps) {
@@ -167,8 +173,12 @@ export default function MealModal({
       const mealAtts = state.attachments.filter((att) => att.mealId === editingMeal.id);
       setAttachments(mealAtts);
     } else {
-      setProgramId(state.programs[0]?.id || 'prog-lunch');
-      setOccurredAtInput('2026-10-27T12:15');
+      setProgramId(initialPreset?.programId || state.programs[0]?.id || 'prog-lunch');
+      setOccurredAtInput(
+        initialPreset
+          ? `${initialPreset.dateVN}T${initialPreset.timeVN}`
+          : '2026-10-27T12:15'
+      );
       setVenue('');
       setTotalPaidVnd(0);
       setPayerMemberId(state.settings.defaultPayerMemberId || 'mem-02');
@@ -182,7 +192,7 @@ export default function MealModal({
       setAttachments([]);
       setRejectReason('');
     }
-  }, [isOpen, editingMeal, state]);
+  }, [isOpen, editingMeal, initialPreset, state]);
 
   const allMembers = useMemo(
     () => [...state.members.filter((m) => m.isActive), ...tempGuests],
