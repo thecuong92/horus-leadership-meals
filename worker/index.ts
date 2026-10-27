@@ -230,7 +230,7 @@ export default {
           {
             id: `audit-${Date.now()}`,
             actorRole: authorRole,
-            actorName,
+            actorName: authorName,
             entityType: 'SYSTEM_COMMIT',
             entityId: commitId,
             action: 'COMMIT_SYSTEM_DATA',
