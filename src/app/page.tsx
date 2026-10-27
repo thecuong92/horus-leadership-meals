@@ -136,12 +136,12 @@ export default function HorusMealsApp() {
   const [soundOn, setSoundOn] = useState<boolean>(true);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Bộ lọc đa chiều toàn cục (F07)
+  // Bộ lọc đa chiều toàn cục (F07) — Mặc định hiển thị TẤT CẢ trạng thái (kể cả Nháp) để không bị ẩn bữa ăn lưu nháp
   const [filters, setFilters] = useState<FilterState>({
     month: '2026-10',
     programId: 'ALL',
     memberId: 'ALL',
-    mealStatusScope: 'OPERATIONAL',
+    mealStatusScope: 'ALL',
     reimbursementFilter: 'ALL',
     invoiceFilter: 'ALL',
     payerMemberId: 'ALL',
@@ -188,33 +188,63 @@ export default function HorusMealsApp() {
     }, 3200);
   }, []);
 
-  const fetchStateFromServer = useCallback(async (currentRole: RoleKey) => {
-    try {
-      const res = await fetch(`/api/state?role=${currentRole}`, {
-        cache: 'no-store',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.state) {
-          setState(data.state);
-          setSyncStatus(
-            `Cloud Sync (${data.source || 'SERVER_DB'} • v${data.state.version})`
-          );
+  const fetchStateFromServer = useCallback(
+    async (currentRole: RoleKey, showSyncToast = false) => {
+      try {
+        const res = await fetch(`/api/state?role=${currentRole}&t=${Date.now()}`, {
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.state) {
+            setState(data.state);
+            setSyncStatus(
+              `Cloud Sync (${data.source || 'CLOUDFLARE_D1'} • v${data.state.version})`
+            );
+            if (showSyncToast) {
+              showToast(
+                `Đã đồng bộ dữ liệu mới nhất từ Hệ thống chung (v${data.state.version} • ${data.state.meals.length} bữa ăn)`
+              );
+            }
+          }
         }
+      } catch {
+        setSyncStatus('Offline Mode');
       }
-    } catch {
-      setSyncStatus('Offline Mode');
-    }
-  }, []);
+    },
+    [showToast]
+  );
 
+  // Đồng bộ tự động khi mở trang, khi chuyển qua lại giữa các thiết bị (focus / visibilitychange) và định kỳ mỗi 15 giây
   useEffect(() => {
     fetchStateFromServer(role);
-  }, [fetchStateFromServer, role]);
+
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === 'visible' && !isMealModalOpen) {
+        fetchStateFromServer(role);
+      }
+    };
+
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && !isMealModalOpen) {
+        fetchStateFromServer(role);
+      }
+    }, 15000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+      window.clearInterval(intervalId);
+    };
+  }, [fetchStateFromServer, role, isMealModalOpen]);
 
   const persistStateToServer = useCallback(
-    async (nextState: AppState, summary?: string) => {
+    async (nextState: AppState, summary?: string, forceReplace = false) => {
       setState(nextState);
-      setSyncStatus('Đang đồng bộ...');
+      setSyncStatus('Đang đồng bộ lên Cloud...');
       if (summary) {
         showToast(summary);
       }
@@ -226,12 +256,17 @@ export default function HorusMealsApp() {
             state: nextState,
             role,
             commitMessage: summary,
+            forceReplace,
           }),
         });
         if (res.ok) {
           const data = await res.json();
-          const targets = (data.savedTargets || ['SERVER_DB']).join(', ');
-          setSyncStatus(`Đã lưu (${targets} • v${nextState.version})`);
+          if (data.state) {
+            setState(data.state);
+          }
+          const targets = (data.savedTargets || ['CLOUDFLARE_D1']).join(', ');
+          const finalVer = data.state?.version ?? nextState.version;
+          setSyncStatus(`Đã đồng bộ Cloud (${targets} • v${finalVer})`);
         } else {
           setSyncStatus('Lưu cục bộ (Chờ Commit)');
         }
@@ -1011,6 +1046,20 @@ export default function HorusMealsApp() {
               </select>
             </div>
 
+            {/* Nút Đồng bộ Đa thiết bị (Cloud Sync Now) */}
+            <button
+              type="button"
+              onClick={() => {
+                playClickSound();
+                fetchStateFromServer(role, true);
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-400/40 text-emerald-300 text-xs font-bold flex items-center gap-1 transition active:scale-95"
+              title="Đồng bộ dữ liệu mới nhất giữa Điện thoại / Máy tính (Cloudflare D1)"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Đồng bộ Cloud</span>
+            </button>
+
             {/* Nút Commit Hệ thống */}
             <button
               type="button"
@@ -1276,7 +1325,143 @@ export default function HorusMealsApp() {
       {/* =====================================================================
           MAIN CONTENT
          ===================================================================== */}
-      <main className="max-w-7xl mx-auto w-full px-3 sm:px-5 py-4 flex-1">
+      <main className="max-w-7xl mx-auto w-full px-3 sm:px-5 py-4 flex-1 space-y-4">
+        {/* HỘP HIỂN THỊ BỮA ĂN LƯU NHÁP (NẾU CÓ) ĐỂ KIỂM TRA & CHỐT 1-CHẠM */}
+        {state.meals.some((m) => m.status === 'DRAFT') && (
+          <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3.5 shadow-2xs animate-slide-up">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded-md bg-amber-600 text-white text-[11px] font-extrabold">
+                  📝 BẢN LƯU NHÁP ({state.meals.filter((m) => m.status === 'DRAFT').length})
+                </span>
+                <span className="text-xs font-bold text-amber-950">
+                  Các bữa ăn bạn đã bấm &ldquo;Lưu nháp&rdquo; nằm ngay tại đây — chỉ cần 1 ảnh chuyển khoản là đủ chốt chính thức!
+                </span>
+              </div>
+              {role !== 'VIEWER' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    playSuccessSound();
+                    const draftIds = new Set(
+                      state.meals.filter((m) => m.status === 'DRAFT').map((m) => m.id)
+                    );
+                    const nextState: AppState = {
+                      ...state,
+                      version: state.version + 1,
+                      meals: state.meals.map((m) =>
+                        draftIds.has(m.id)
+                          ? {
+                              ...m,
+                              status: 'APPROVED',
+                              updatedAt: new Date().toISOString(),
+                              updatedBy: currentUserName,
+                            }
+                          : m
+                      ),
+                      attachments: state.attachments.map((att) =>
+                        draftIds.has(att.mealId)
+                          ? { ...att, type: 'PAYMENT_PROOF' }
+                          : att
+                      ),
+                    };
+                    persistStateToServer(
+                      nextState,
+                      `Đã chốt chính thức ${draftIds.size} bữa ăn từ Lưu nháp!`
+                    );
+                  }}
+                  className="px-3 py-1 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-extrabold shadow-xs transition active:scale-95"
+                >
+                  ✓ Chốt chính thức tất cả ({state.meals.filter((m) => m.status === 'DRAFT').length} bữa)
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {state.meals
+                .filter((m) => m.status === 'DRAFT')
+                .map((draftMeal) => {
+                  const attCount = state.attachments.filter(
+                    (a) => a.mealId === draftMeal.id
+                  ).length;
+                  const attPeople = state.attendance.filter(
+                    (a) => a.mealId === draftMeal.id && a.attended
+                  ).length;
+                  return (
+                    <div
+                      key={draftMeal.id}
+                      className="bg-white rounded-xl border border-amber-200 p-2.5 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-900">
+                          <span className="text-amber-700">{draftMeal.code}</span>
+                          <span>•</span>
+                          <span className="truncate">{draftMeal.venue}</span>
+                          <span>•</span>
+                          <span className="text-teal-700">
+                            {formatVnd(draftMeal.totalPaidVnd)}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          Ngày: {formatDateTimeVN(draftMeal.occurredAt)} • {attPeople} người ăn •{' '}
+                          {attCount} ảnh đính kèm
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playClickSound();
+                            setEditingMeal(draftMeal);
+                            setMealModalPreset(null);
+                            setIsMealModalOpen(true);
+                          }}
+                          className="px-2.5 py-1 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 text-[11px] font-bold"
+                        >
+                          Xem / Sửa
+                        </button>
+                        {role !== 'VIEWER' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              playSuccessSound();
+                              const nextState: AppState = {
+                                ...state,
+                                version: state.version + 1,
+                                meals: state.meals.map((m) =>
+                                  m.id === draftMeal.id
+                                    ? {
+                                        ...m,
+                                        status: 'APPROVED',
+                                        updatedAt: new Date().toISOString(),
+                                        updatedBy: currentUserName,
+                                      }
+                                    : m
+                                ),
+                                attachments: state.attachments.map((att) =>
+                                  att.mealId === draftMeal.id
+                                    ? { ...att, type: 'PAYMENT_PROOF' }
+                                    : att
+                                ),
+                              };
+                              persistStateToServer(
+                                nextState,
+                                `Đã chốt chính thức bữa ăn ${draftMeal.code} (${draftMeal.venue})!`
+                              );
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold"
+                          >
+                            ✓ Chốt luôn
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+
         {/* ===================================================================
             TAB 1: TỔNG QUAN THÁNG (Gọn, có animation & đối soát)
            =================================================================== */}
@@ -2001,7 +2186,8 @@ export default function HorusMealsApp() {
                 demo.version = state.version + 1;
                 persistStateToServer(
                   demo,
-                  'Đã nạp bộ dữ liệu mẫu Demo tháng 10/2026'
+                  'Đã nạp bộ dữ liệu mẫu Demo tháng 10/2026',
+                  true
                 );
               }}
               onClearTransactionsOnly={() => {
@@ -2009,7 +2195,8 @@ export default function HorusMealsApp() {
                 const clean = createCleanProductionState(state);
                 persistStateToServer(
                   clean,
-                  'Đã xóa sạch toàn bộ bữa ăn & hoàn ứng về 0đ (Giữ 8 thành viên BOD)'
+                  'Đã xóa sạch toàn bộ bữa ăn & hoàn ứng về 0đ (Giữ 8 thành viên BOD)',
+                  true
                 );
               }}
             />

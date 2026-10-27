@@ -385,56 +385,54 @@ export default function MealModal({
 
   const handleSubmitForm = (targetStatus: 'DRAFT' | 'SUBMITTED') => {
     setErrorMessage('');
-    const cleanVenue = venue.trim();
-    const cleanTotal = Math.round(totalPaidVnd);
+    const defaultVenueName =
+      programId === 'prog-dinner' ? 'Ăn tối Thứ 5 BOD' : 'Ăn trưa BOD';
+    const cleanVenue = venue.trim() || defaultVenueName;
+    const cleanTotal = Math.max(0, Math.round(totalPaidVnd));
 
-    if (!cleanVenue) {
+    // Nếu chưa tích chọn người ăn, tự động chọn các thành viên mặc định của chương trình
+    const finalAttendeeIds =
+      selectedAttendeeIds.length > 0
+        ? selectedAttendeeIds
+        : eligibleProgramMembers.map((m) => m.id);
+
+    // Tính lại phân bổ theo danh sách người ăn thực tế
+    const mealId = editingMeal?.id || `meal-${Date.now()}`;
+    let activeAllocations = computedAllocations;
+    if (selectedAttendeeIds.length === 0 && finalAttendeeIds.length > 0) {
+      activeAllocations = allocateEqualVnd(mealId, cleanTotal, finalAttendeeIds);
+    }
+
+    if (
+      targetStatus === 'SUBMITTED' &&
+      allocationMethod === 'MANUAL' &&
+      finalAttendeeIds.length > 0 &&
+      allocationSumVnd !== cleanTotal
+    ) {
       playWarningSound();
-      setErrorMessage('Vui lòng nhập tên địa điểm / quán ăn.');
+      setErrorMessage(
+        `Tổng tiền tự nhập từng người (${formatVnd(allocationSumVnd)}) chưa khớp tổng thanh toán (${formatVnd(cleanTotal)}). Chênh lệch: ${formatVnd(allocationDiffVnd)}.`
+      );
       return;
     }
 
-    if (targetStatus === 'SUBMITTED') {
-      if (cleanTotal <= 0) {
-        playWarningSound();
-        setErrorMessage('Tổng số tiền thanh toán phải lớn hơn 0 VND khi gửi hồ sơ.');
-        return;
-      }
-      if (selectedAttendeeIds.length === 0) {
-        playWarningSound();
-        setErrorMessage(
-          'F06: Phải đánh dấu ít nhất 1 người tham gia thực tế trước khi gửi hồ sơ.'
-        );
-        return;
-      }
-      const paymentProofCount = attachments.filter((a) => a.type === 'PAYMENT_PROOF').length;
-      if (paymentProofCount === 0) {
-        playWarningSound();
-        setErrorMessage(
-          'AC-07: Bắt buộc đính kèm tối thiểu 1 ảnh chứng từ thanh toán khi gửi hồ sơ (Bạn vẫn có thể bấm Lưu nháp nếu chưa có ảnh).'
-        );
-        return;
-      }
-      if (allocationSumVnd !== cleanTotal) {
-        playWarningSound();
-        setErrorMessage(
-          `F06: Tổng tiền phân bổ (${formatVnd(allocationSumVnd)}) phải bằng chính xác tổng tiền thực thanh toán (${formatVnd(cleanTotal)}). Chênh lệch: ${formatVnd(allocationDiffVnd)}.`
-        );
-        return;
-      }
-    }
-
-    const mealId = editingMeal?.id || `meal-${Date.now()}`;
     const monthPart = mealDateVN.slice(0, 7).replace('-', '');
     const seqNum = String(state.meals.length + 1).padStart(3, '0');
     const code = editingMeal?.code || `B-${monthPart}-${seqNum}`;
 
-    let finalStatus: MealStatus = targetStatus;
-    let reapprovalNote = '';
-    if (editingMeal && editingMeal.status === 'APPROVED' && targetStatus === 'SUBMITTED') {
-      finalStatus = 'SUBMITTED';
-      reapprovalNote = ' (Đã cập nhật sau khi duyệt -> Chuyển về chờ Finance duyệt lại theo AC-19)';
-    }
+    // Nếu bấm Lưu & Chốt luôn (SUBMITTED): mặc định duyệt luôn (APPROVED) để không cần rườm rà nhiều bước
+    let finalStatus: MealStatus =
+      targetStatus === 'SUBMITTED' ? 'APPROVED' : 'DRAFT';
+
+    // Tự động coi mọi ảnh đính kèm đầu tiên là ảnh chuyển khoản (PAYMENT_PROOF) nếu chưa có
+    const normalizedAttachments = attachments.map((att, idx) => ({
+      ...att,
+      mealId,
+      type:
+        idx === 0 && !attachments.some((a) => a.type === 'PAYMENT_PROOF')
+          ? ('PAYMENT_PROOF' as AttachmentType)
+          : att.type,
+    }));
 
     const nowIso = new Date().toISOString();
     const mealObj: MealSession = {
@@ -448,7 +446,7 @@ export default function MealModal({
       paymentMethod,
       status: finalStatus,
       allocationMethod,
-      hasInvoice: hasInvoice || attachments.some((a) => a.type === 'INVOICE'),
+      hasInvoice: hasInvoice || normalizedAttachments.some((a) => a.type === 'INVOICE'),
       note: note.trim(),
       createdBy: editingMeal?.createdBy || currentUserName,
       createdAt: editingMeal?.createdAt || nowIso,
@@ -456,25 +454,20 @@ export default function MealModal({
       updatedAt: nowIso,
     };
 
-    const finalAllocations = computedAllocations.map((al) => ({
+    const finalAllocations = activeAllocations.map((al) => ({
       ...al,
-      mealId,
-    }));
-
-    const finalAttachments = attachments.map((att) => ({
-      ...att,
       mealId,
     }));
 
     playSuccessSound();
     onSaveMeal({
       meal: mealObj,
-      attendeeIds: selectedAttendeeIds,
+      attendeeIds: finalAttendeeIds,
       allocations: finalAllocations,
-      attachments: finalAttachments,
+      attachments: normalizedAttachments,
       newGuests: tempGuests,
       auditAction: editingMeal ? 'UPDATE_MEAL' : 'CREATE_MEAL',
-      auditSummary: `${editingMeal ? 'Cập nhật' : 'Tạo mới'} bữa ăn ${code} (${cleanVenue}) — ${formatVnd(cleanTotal)} — ${selectedAttendeeIds.length} người tham gia — Trạng thái: ${finalStatus}${reapprovalNote}`,
+      auditSummary: `${editingMeal ? 'Cập nhật' : 'Tạo mới'} bữa ăn ${code} (${cleanVenue}) — ${formatVnd(cleanTotal)} — ${finalAttendeeIds.length} người tham gia — Trạng thái: ${finalStatus}`,
     });
 
     onClose();
@@ -915,23 +908,22 @@ export default function MealModal({
             <div className="md:col-span-7 border border-slate-200 rounded-xl p-3 bg-slate-50/60">
               <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2">
                 <span className="text-xs font-bold text-slate-900">
-                  9. Chứng từ ({paymentProofsCount} TT • {invoicesCount} HĐ)
+                  9. Ảnh chuyển khoản / Hóa đơn ({attachments.length} ảnh)
                 </span>
                 {!isReadOnly && (
                   <div className="flex flex-wrap gap-1.5">
                     <label className="px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold cursor-pointer flex items-center gap-1">
-                      <Camera className="w-3 h-3" /> + Ảnh TT
+                      <Camera className="w-3 h-3" /> + Ảnh Chuyển khoản / Bill
                       <input
                         type="file"
                         accept="image/*,application/pdf"
-                        capture="environment"
                         multiple
                         onChange={(e) => handleFileUpload(e, 'PAYMENT_PROOF')}
                         className="hidden"
                       />
                     </label>
                     <label className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold cursor-pointer flex items-center gap-1">
-                      <Upload className="w-3 h-3" /> + HĐ VAT
+                      <Upload className="w-3 h-3" /> + HĐ VAT (Nếu có)
                       <input
                         type="file"
                         accept="image/*,application/pdf"
@@ -940,13 +932,6 @@ export default function MealModal({
                         className="hidden"
                       />
                     </label>
-                    <button
-                      type="button"
-                      onClick={handleAddDemoPaymentProof}
-                      className="px-2 py-1 rounded-lg bg-white border border-slate-300 text-slate-700 text-[11px] font-medium hover:bg-slate-100"
-                    >
-                      + Mẫu UNC
-                    </button>
                   </div>
                 )}
               </div>
@@ -956,8 +941,9 @@ export default function MealModal({
                   AC-18: Vai trò Viewer bị giới hạn quyền xem ảnh chứng từ.
                 </div>
               ) : attachments.length === 0 ? (
-                <div className="text-[11px] text-slate-400 italic py-2">
-                  Chưa đính kèm ảnh (Bắt buộc ≥1 ảnh TT khi Gửi hồ sơ; Lưu nháp không bắt buộc).
+                <div className="text-[11px] text-slate-500 py-1.5">
+                  Chỉ cần tải ảnh chuyển khoản (hoặc để trống tùy ý) — bấm{' '}
+                  <strong className="text-teal-700">Lưu &amp; Chốt luôn</strong> không cần ràng buộc phức tạp.
                 </div>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
@@ -969,9 +955,9 @@ export default function MealModal({
                       <button
                         type="button"
                         onClick={() => setPreviewAttachment(att)}
-                        className="font-semibold text-teal-700 hover:underline truncate max-w-[140px]"
+                        className="font-semibold text-teal-700 hover:underline truncate max-w-[160px]"
                       >
-                        [{att.type === 'PAYMENT_PROOF' ? 'TT' : 'HĐ'}] {att.filename}
+                        [{att.type === 'PAYMENT_PROOF' ? 'Ảnh CK' : 'HĐ'}] {att.filename}
                       </button>
                       {!isReadOnly && (
                         <button
@@ -1099,7 +1085,7 @@ export default function MealModal({
                   className="px-4 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-xs flex items-center gap-1"
                 >
                   <Check className="w-3.5 h-3.5" />
-                  {editingMeal ? 'Lưu & Gửi' : 'Gửi hồ sơ'}
+                  {editingMeal ? 'Lưu & Chốt luôn' : 'Lưu & Chốt luôn'}
                 </button>
               </>
             )}

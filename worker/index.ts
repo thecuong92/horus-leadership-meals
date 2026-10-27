@@ -103,6 +103,125 @@ async function saveStateToD1(
     .run();
 }
 
+function mergeById<T extends { id: string }>(
+  serverArr: T[] = [],
+  clientArr: T[] = [],
+  compareUpdated?: (a: T, b: T) => T
+): T[] {
+  const map = new Map<string, T>();
+  for (const item of serverArr) {
+    map.set(item.id, item);
+  }
+  for (const item of clientArr) {
+    const existing = map.get(item.id);
+    if (existing && compareUpdated) {
+      map.set(item.id, compareUpdated(existing, item));
+    } else {
+      map.set(item.id, item);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeMultiDeviceStates(
+  server: AppState,
+  client: AppState,
+  forceReplace = false
+): AppState {
+  if (forceReplace) {
+    return {
+      ...client,
+      version: Math.max(server.version || 1, client.version || 1) + 1,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+  }
+
+  // Merge Meals (ưu tiên bản ghi có updatedAt mới hơn)
+  const mergedMeals = mergeById(server.meals, client.meals, (sMeal, cMeal) => {
+    const sTime = new Date(sMeal.updatedAt || sMeal.createdAt || 0).getTime();
+    const cTime = new Date(cMeal.updatedAt || cMeal.createdAt || 0).getTime();
+    return cTime >= sTime ? cMeal : sMeal;
+  });
+
+  // Với Attendance & Allocations: nếu mealId có mặt trong client.meals và vừa được cập nhật ở client, lấy theo client; nếu mealId chỉ có trên server, giữ nguyên của server
+  const clientMealTimeMap = new Map(
+    (client.meals || []).map((m) => [
+      m.id,
+      new Date(m.updatedAt || m.createdAt || 0).getTime(),
+    ])
+  );
+  const serverMealTimeMap = new Map(
+    (server.meals || []).map((m) => [
+      m.id,
+      new Date(m.updatedAt || m.createdAt || 0).getTime(),
+    ])
+  );
+
+  const mealUsesClientChildren = (mealId: string): boolean => {
+    const cT = clientMealTimeMap.get(mealId);
+    const sT = serverMealTimeMap.get(mealId);
+    if (cT === undefined) return false;
+    if (sT === undefined) return true;
+    return cT >= sT;
+  };
+
+  const mergedAttendance = [
+    ...(server.attendance || []).filter((a) => !mealUsesClientChildren(a.mealId)),
+    ...(client.attendance || []).filter((a) => mealUsesClientChildren(a.mealId)),
+  ];
+
+  const mergedAllocations = [
+    ...(server.allocations || []).filter((al) => !mealUsesClientChildren(al.mealId)),
+    ...(client.allocations || []).filter((al) => mealUsesClientChildren(al.mealId)),
+  ];
+
+  // Merge Attachments (bảo toàn dataUrl)
+  const serverAttMap = new Map((server.attachments || []).map((a) => [a.id, a]));
+  const clientAttMap = new Map((client.attachments || []).map((a) => [a.id, a]));
+  const allAttIds = new Set([...serverAttMap.keys(), ...clientAttMap.keys()]);
+  const mergedAttachments = Array.from(allAttIds)
+    .map((id) => {
+      const sAtt = serverAttMap.get(id);
+      const cAtt = clientAttMap.get(id);
+      if (cAtt && sAtt) {
+        return {
+          ...cAtt,
+          dataUrl: cAtt.dataUrl || sAtt.dataUrl || '',
+        };
+      }
+      return (cAtt || sAtt)!;
+    })
+    .filter(Boolean);
+
+  return {
+    ...client,
+    version: Math.max(server.version || 1, client.version || 1) + 1,
+    lastUpdatedAt: new Date().toISOString(),
+    programs: mergeById(server.programs, client.programs),
+    members: mergeById(server.members, client.members),
+    programMemberships: mergeById(server.programMemberships, client.programMemberships),
+    meals: mergedMeals,
+    attendance: mergedAttendance,
+    allocations: mergedAllocations,
+    attachments: mergedAttachments,
+    reimbursementBatches: mergeById(
+      server.reimbursementBatches,
+      client.reimbursementBatches
+    ),
+    reimbursementItems: mergeById(server.reimbursementItems, client.reimbursementItems),
+    reimbursementPayments: mergeById(
+      server.reimbursementPayments,
+      client.reimbursementPayments
+    ),
+    auditLogs: mergeById(server.auditLogs, client.auditLogs).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    ),
+    commits: mergeById(server.commits, client.commits).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    ),
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -132,6 +251,7 @@ export default {
             state?: AppState;
             role?: string;
             commitMessage?: string;
+            forceReplace?: boolean;
           };
           const incomingState = body.state;
           const role = ((body.role || 'ADMIN').toUpperCase() as RoleKey);
@@ -148,23 +268,21 @@ export default {
           }
 
           const { state: currentServerState } = await loadStateFromD1(env.DB);
-          const serverAttMap = new Map(
-            (currentServerState.attachments || []).map((a) => [a.id, a.dataUrl])
+          const mergedState = mergeMultiDeviceStates(
+            currentServerState,
+            incomingState,
+            Boolean(body.forceReplace)
           );
-          incomingState.attachments = (incomingState.attachments || []).map((att) => ({
-            ...att,
-            dataUrl: att.dataUrl || serverAttMap.get(att.id) || '',
-          }));
 
           await saveStateToD1(
             env.DB,
-            incomingState,
-            body.commitMessage || 'Auto save state',
+            mergedState,
+            body.commitMessage || 'Auto save state (Multi-device sync)',
             role
           );
 
           return jsonResponse({
-            state: sanitizeStateForRole(incomingState, role),
+            state: sanitizeStateForRole(mergedState, role),
             savedTargets: ['CLOUDFLARE_D1_APAC'],
             warnings: [],
           });
