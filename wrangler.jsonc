@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "horus-leadership-meals",
+  "main": "worker/index.ts",
+  "compatibility_date": "2025-02-01",
+  "assets": {
+    "directory": "./out",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "horus-leadership-meals-db",
+      "database_id": "aa726a41-737e-4f5e-a698-aa08f1e270a3"
+    }
+  ]
+}

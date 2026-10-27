@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:logic": "npx tsx src/lib/__tests__/verify-ac.ts"
+    "test:logic": "npx tsx src/lib/__tests__/verify-ac.ts",
+    "cf:build": "node scripts/build-cf.mjs",
+    "deploy": "node scripts/build-cf.mjs && npx wrangler deploy"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
