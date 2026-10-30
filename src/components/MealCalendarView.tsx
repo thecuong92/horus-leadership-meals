@@ -37,10 +37,12 @@ interface DayCellData {
   isToday: boolean;
   isPastOrToday: boolean;
   isWeekday: boolean; // Mon - Fri
+  isSaturday: boolean; // Sat (dayOfWeek === 6) - đi làm cách tuần
   isThursday: boolean; // Thu (dayOfWeek === 4)
   lunchMeals: MealSession[];
   dinnerMeals: MealSession[];
   missingLunch: boolean;
+  missingSaturdayLunch: boolean;
   missingThursdayDinner: boolean;
 }
 
@@ -50,7 +52,7 @@ const WEEKDAY_HEADERS = [
   'Thứ 4',
   'Thứ 5 (Có Tối)',
   'Thứ 6',
-  'Thứ 7',
+  'Thứ 7 (Cách tuần)',
   'Chủ Nhật',
 ];
 
@@ -108,10 +110,12 @@ function buildMonthGrid(
       isToday: dateStr === todayVN,
       isPastOrToday: dateStr <= todayVN,
       isWeekday: dow >= 1 && dow <= 5,
+      isSaturday: dow === 6,
       isThursday: dow === 4,
       lunchMeals,
       dinnerMeals,
       missingLunch: false,
+      missingSaturdayLunch: false,
       missingThursdayDinner: false,
     });
   }
@@ -123,6 +127,7 @@ function buildMonthGrid(
     const dateStr = `${validMonth}-${String(dNum).padStart(2, '0')}`;
     const isPastOrToday = dateStr <= todayVN;
     const isWeekday = dow >= 1 && dow <= 5;
+    const isSaturday = dow === 6;
     const isThursday = dow === 4;
 
     const dayMeals = mealsByDate[dateStr] || [];
@@ -137,10 +142,12 @@ function buildMonthGrid(
       isToday: dateStr === todayVN,
       isPastOrToday,
       isWeekday,
+      isSaturday,
       isThursday,
       lunchMeals,
       dinnerMeals,
       missingLunch: isPastOrToday && isWeekday && lunchMeals.length === 0,
+      missingSaturdayLunch: isSaturday && lunchMeals.length === 0,
       missingThursdayDinner: isPastOrToday && isThursday && dinnerMeals.length === 0,
     });
   }
@@ -166,10 +173,12 @@ function buildMonthGrid(
       isToday: dateStr === todayVN,
       isPastOrToday: dateStr <= todayVN,
       isWeekday: dow >= 1 && dow <= 5,
+      isSaturday: dow === 6,
       isThursday: dow === 4,
       lunchMeals,
       dinnerMeals,
       missingLunch: false,
+      missingSaturdayLunch: false,
       missingThursdayDinner: false,
     });
   }
@@ -223,6 +232,7 @@ export default function MealCalendarView({
     const loggedLunchDays = currentMonthCells.filter((c) => c.lunchMeals.length > 0);
     const loggedDinnerDays = currentMonthCells.filter((c) => c.dinnerMeals.length > 0);
     const missingLunchDays = currentMonthCells.filter((c) => c.missingLunch);
+    const missingSaturdayLunchDays = currentMonthCells.filter((c) => c.missingSaturdayLunch);
     const missingThursdayDinnerDays = currentMonthCells.filter((c) => c.missingThursdayDinner);
 
     const totalLunchVnd = loggedLunchDays.reduce(
@@ -238,6 +248,7 @@ export default function MealCalendarView({
       loggedLunchDays,
       loggedDinnerDays,
       missingLunchDays,
+      missingSaturdayLunchDays,
       missingThursdayDinnerDays,
       totalLunchVnd,
       totalDinnerVnd,
@@ -269,7 +280,7 @@ export default function MealCalendarView({
             {/* Chú thích 2 màu rõ ràng */}
             <div className="flex items-center gap-2 ml-1">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-600 text-white text-[11px] font-bold shadow-2xs">
-                <Sun className="w-3 h-3" /> Màu Xanh Teal: Ăn trưa (Hằng ngày)
+                <Sun className="w-3 h-3" /> Màu Xanh Teal: Ăn trưa (T2–T6 & T7 cách tuần)
               </span>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[11px] font-bold shadow-2xs">
                 <Moon className="w-3 h-3" /> Màu Tím Indigo: Ăn tối Thứ 5
@@ -277,7 +288,7 @@ export default function MealCalendarView({
             </div>
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
-            Ô có viền nét đứt cảnh báo những ngày trong tuần (T2–T6) hoặc tối Thứ 5 đã qua mà bạn <strong>chưa note tiền</strong>. Bấm trực tiếp vào bất kỳ ngày nào để thêm bữa ăn cho ngày đó.
+            Ô có viền nét đứt hỗ trợ bấm nhanh những ngày trong tuần (T2–T6), <strong>Thứ 7 đi làm cách tuần</strong> hoặc tối Thứ 5 mà bạn <strong>chưa note tiền</strong>. Bấm trực tiếp vào bất kỳ ngày nào để thêm bữa ăn.
           </p>
         </div>
 
@@ -383,14 +394,14 @@ export default function MealCalendarView({
 
           {monthSummary.missingLunchDays.length === 0 ? (
             <div className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Đã note đủ tất cả các ngày làm việc trong tháng!
+              <CheckCircle2 className="w-3.5 h-3.5" /> Đã note đủ tất cả các ngày làm việc T2–T6 trong tháng!
             </div>
           ) : (
             <div>
               <div className="text-[11px] font-bold text-amber-800 mb-1 flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                 <span>
-                  Còn trống {monthSummary.missingLunchDays.length} ngày làm việc (T2–T6) chưa note ăn trưa — Bấm vào ngày để nhập bù:
+                  Còn trống {monthSummary.missingLunchDays.length} ngày T2–T6 chưa note ăn trưa — Bấm vào ngày để nhập bù:
                 </span>
               </div>
               <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto pr-1">
@@ -414,6 +425,33 @@ export default function MealCalendarView({
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {monthSummary.missingSaturdayLunchDays.length > 0 && (
+            <div className="pt-1.5 border-t border-teal-200/70 flex flex-wrap items-center gap-1">
+              <span className="text-[10px] font-bold text-teal-900 mr-1">
+                Thứ 7 đi làm cách tuần (bấm để note ăn trưa):
+              </span>
+              {monthSummary.missingSaturdayLunchDays.map((cell) => (
+                <button
+                  key={cell.dateStr}
+                  type="button"
+                  disabled={role === 'VIEWER'}
+                  onClick={() => {
+                    playClickSound();
+                    onQuickAddMealForDate({
+                      programId: lunchProg?.id || 'prog-lunch',
+                      dateVN: cell.dateStr,
+                      timeVN: '12:15',
+                    });
+                  }}
+                  className="px-2 py-0.5 rounded bg-teal-100/80 hover:bg-teal-600 hover:text-white text-teal-900 border border-teal-400 text-[10px] font-extrabold transition"
+                  title={`Bấm để note Ăn trưa Thứ 7 ngày ${cell.dateStr}`}
+                >
+                  + T7 ({formatShortDate(cell.dateStr)})
+                </button>
+              ))}
             </div>
           )}
         </div>
@@ -479,7 +517,11 @@ export default function MealCalendarView({
             <div
               key={label}
               className={`py-2 px-2 text-center border-r border-slate-800 last:border-r-0 ${
-                idx === 3 ? 'bg-indigo-950 text-indigo-200' : ''
+                idx === 3
+                  ? 'bg-indigo-950 text-indigo-200'
+                  : idx === 5
+                  ? 'bg-teal-950 text-teal-200'
+                  : ''
               }`}
             >
               {label}
@@ -503,17 +545,19 @@ export default function MealCalendarView({
                     ? 'bg-teal-50/40 ring-2 ring-inset ring-teal-500'
                     : cell.isThursday
                     ? 'bg-indigo-50/15 hover:bg-slate-50'
+                    : cell.isSaturday
+                    ? 'bg-teal-50/15 hover:bg-slate-50'
                     : 'bg-white hover:bg-slate-50'
                 }`}
               >
-                {/* Dòng trên cùng của ô ngày: Số ngày + Nút thêm nhanh khi hover */}
+                {/* Dòng trên cùng của ô ngày: Số ngày + Nút thêm nhanh */}
                 <div className="flex items-center justify-between gap-1">
                   <div className="flex items-center gap-1">
                     <span
                       className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-extrabold ${
                         cell.isToday
                           ? 'bg-teal-600 text-white'
-                          : cell.dayOfWeek >= 6
+                          : cell.dayOfWeek === 7
                           ? 'text-slate-400'
                           : 'text-slate-800'
                       }`}
@@ -606,6 +650,29 @@ export default function MealCalendarView({
                     >
                       <span className="text-[10px] font-semibold truncate">
                         Chưa note Trưa
+                      </span>
+                      <Plus className="w-3 h-3 shrink-0 text-teal-700" />
+                    </button>
+                  )}
+
+                  {/* Nút NOTE ĂN TRƯA THỨ 7 (Đi làm cách tuần — luôn hiển thị trên các ngày Thứ 7 chưa note) */}
+                  {cell.isCurrentMonth && !hasLunch && cell.isSaturday && (
+                    <button
+                      type="button"
+                      disabled={role === 'VIEWER'}
+                      onClick={() => {
+                        playClickSound();
+                        onQuickAddMealForDate({
+                          programId: lunchProg?.id || 'prog-lunch',
+                          dateVN: cell.dateStr,
+                          timeVN: '12:15',
+                        });
+                      }}
+                      className="w-full text-left px-1.5 py-1 rounded-md border border-dashed border-teal-400 bg-teal-50/60 hover:bg-teal-100/90 text-teal-800 transition flex items-center justify-between"
+                      title="Thứ 7 đi làm cách tuần — Bấm để note bữa ăn trưa Thứ 7"
+                    >
+                      <span className="text-[10px] font-semibold truncate">
+                        + Note Trưa T7
                       </span>
                       <Plus className="w-3 h-3 shrink-0 text-teal-700" />
                     </button>

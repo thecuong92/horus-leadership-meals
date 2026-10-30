@@ -54,7 +54,7 @@ function getBaseProgramsAndMembers(): {
       shortName: 'Leadership Lunch (Ăn trưa)',
       description:
         'Knowledge sharing, cập nhật xã hội, kết nối, grow-up mindset, phối hợp liên phòng ban.',
-      scheduleDesc: 'Hằng ngày (Thứ 2 – Thứ 6)',
+      scheduleDesc: 'Thứ 2 – Thứ 6 & Thứ 7 cách tuần',
       reimbursementPolicyPct: 100,
       policyNote: 'Công ty chi trả 100%',
       active: true,
