@@ -27,6 +27,19 @@ function triggerDownload(blob: Blob, filename: string) {
 }
 
 /**
+ * Tạo đường dẫn trực tiếp (clickable URL) để khi click vào trong Excel / PDF / CSV sẽ mở ngay ảnh chứng từ trên trình duyệt
+ */
+export function getAttachmentPublicUrl(attId: string): string {
+  const baseOrigin =
+    typeof window !== 'undefined' &&
+    window.location?.origin &&
+    !window.location.origin.includes('localhost')
+      ? window.location.origin
+      : 'https://horus-leadership-meals.san-hang-len-mf.workers.dev';
+  return `${baseOrigin}/api/attachments/${encodeURIComponent(attId)}?view=1`;
+}
+
+/**
  * F12 & AC-16: Xuất file Excel (.xlsx) 4 sheet chuẩn đối soát kế toán Horus
  */
 export function exportMonthlyExcel(
@@ -134,11 +147,18 @@ export function exportMonthlyExcel(
     'Mã đợt hoàn ứng',
     'Đã hoàn (VND)',
     'Còn phải hoàn (VND)',
-    'Chứng từ đính kèm',
+    'Chứng từ đính kèm (Click mở ảnh)',
+    'Link ảnh trực tiếp (Click để xem)',
     'Ghi chú',
   ];
 
-  const sheet2Data = meals.map((meal) => {
+  const sheet2Hyperlinks: Array<{
+    rowIdx: number; // 1-based data row index in ws2 (header is row 0)
+    primaryUrl: string;
+    tooltip: string;
+  }> = [];
+
+  const sheet2Data = meals.map((meal, idx) => {
     const prog = state.programs.find((p) => p.id === meal.programId);
     const payer = state.members.find((m) => m.id === meal.payerMemberId);
     const attMembers = state.attendance
@@ -148,8 +168,28 @@ export function exportMonthlyExcel(
     const rInfo = reimbMap[meal.id];
     const mealAtts = state.attachments.filter((att) => att.mealId === meal.id);
     const attText = canSeeAttachments
-      ? mealAtts.map((a) => `[${a.type}] ${a.filename}`).join('; ')
+      ? mealAtts.length > 0
+        ? mealAtts
+            .map(
+              (a) =>
+                `🔗 Xem ảnh: [${a.type === 'PAYMENT_PROOF' ? 'UNC/CK' : 'HĐ'}] ${a.filename}`
+            )
+            .join('; ')
+        : '—'
       : `(${mealAtts.length} chứng từ - hạn chế quyền xem)`;
+
+    const directLinksText =
+      canSeeAttachments && mealAtts.length > 0
+        ? mealAtts.map((a) => getAttachmentPublicUrl(a.id)).join(' ; ')
+        : '';
+
+    if (canSeeAttachments && mealAtts.length > 0) {
+      sheet2Hyperlinks.push({
+        rowIdx: idx + 1,
+        primaryUrl: getAttachmentPublicUrl(mealAtts[0].id),
+        tooltip: `Bấm để mở ảnh chứng từ bữa ${meal.code} (${meal.venue}) trên trình duyệt`,
+      });
+    }
 
     const dtStr = formatDateTimeVN(meal.occurredAt);
     return [
@@ -170,6 +210,7 @@ export function exportMonthlyExcel(
       rInfo?.reimbursedAmountVnd || 0,
       rInfo?.remainingUnpaidVnd || 0,
       attText,
+      directLinksText,
       meal.note || '',
     ];
   });
@@ -197,10 +238,23 @@ export function exportMonthlyExcel(
     totalReimbSum,
     totalRemainSum,
     '',
+    '',
     'Tổng thực chi từng bữa (không nhân theo người)',
   ]);
 
   const ws2 = XLSX.utils.aoa_to_sheet([sheet2Header, ...sheet2Data]);
+  // Gắn native Excel Hyperlink (click trực tiếp mở ảnh trên trình duyệt) cho cột Chứng từ (col 16) và cột Link ảnh (col 17)
+  for (const hl of sheet2Hyperlinks) {
+    const attCellRef = XLSX.utils.encode_cell({ r: hl.rowIdx, c: 16 });
+    const linkCellRef = XLSX.utils.encode_cell({ r: hl.rowIdx, c: 17 });
+    if (ws2[attCellRef]) {
+      ws2[attCellRef].l = { Target: hl.primaryUrl, Tooltip: hl.tooltip };
+    }
+    if (ws2[linkCellRef]) {
+      ws2[linkCellRef].l = { Target: hl.primaryUrl, Tooltip: hl.tooltip };
+    }
+  }
+
   ws2['!cols'] = [
     { wch: 15 },
     { wch: 14 },
@@ -218,7 +272,8 @@ export function exportMonthlyExcel(
     { wch: 18 },
     { wch: 18 },
     { wch: 18 },
-    { wch: 36 },
+    { wch: 38 },
+    { wch: 58 },
     { wch: 35 },
   ];
   XLSX.utils.book_append_sheet(wb, ws2, 'Danh_sach_bua_an');
@@ -353,12 +408,34 @@ export function exportMonthlyExcel(
     'Còn phải hoàn (VND)',
     'Trạng thái hoàn ứng',
     'Mã đợt',
+    'Link Ảnh Chứng Từ (Click mở ảnh)',
   ]);
+
+  const sheet4Hyperlinks: Array<{
+    rowIdx: number;
+    url: string;
+    tooltip: string;
+  }> = [];
 
   for (const meal of meals) {
     const prog = state.programs.find((p) => p.id === meal.programId);
     const payer = state.members.find((m) => m.id === meal.payerMemberId);
     const r = reimbMap[meal.id];
+    const mealAtts = state.attachments.filter((a) => a.mealId === meal.id);
+    const linkUrl =
+      canSeeAttachments && mealAtts.length > 0
+        ? getAttachmentPublicUrl(mealAtts[0].id)
+        : '';
+
+    const currentRowIdx = sheet4Rows.length;
+    if (linkUrl) {
+      sheet4Hyperlinks.push({
+        rowIdx: currentRowIdx,
+        url: linkUrl,
+        tooltip: `Click để xem ảnh chứng từ bữa ${meal.code} (${meal.venue})`,
+      });
+    }
+
     sheet4Rows.push([
       meal.code,
       formatDateVN(meal.occurredAt),
@@ -372,10 +449,18 @@ export function exportMonthlyExcel(
       r?.remainingUnpaidVnd || 0,
       r?.status || 'NOT_ELIGIBLE',
       r?.batchCodes.join(', ') || '—',
+      linkUrl || '—',
     ]);
   }
 
   const ws4 = XLSX.utils.aoa_to_sheet(sheet4Rows);
+  for (const hl of sheet4Hyperlinks) {
+    const cellRef = XLSX.utils.encode_cell({ r: hl.rowIdx, c: 12 });
+    if (ws4[cellRef]) {
+      ws4[cellRef].l = { Target: hl.url, Tooltip: hl.tooltip };
+    }
+  }
+
   ws4['!cols'] = [
     { wch: 18 },
     { wch: 34 },
@@ -387,6 +472,9 @@ export function exportMonthlyExcel(
     { wch: 24 },
     { wch: 20 },
     { wch: 36 },
+    { wch: 20 },
+    { wch: 18 },
+    { wch: 58 },
   ];
   XLSX.utils.book_append_sheet(wb, ws4, 'Hoan_ung');
 
@@ -442,6 +530,7 @@ export async function exportAttachmentsZip(
       'Tong_Tien_VND',
       'Loai_Chung_Tu',
       'Ten_File_Trong_Zip',
+      'Link_Xem_Anh_Online',
       'Nguoi_Tai_Len',
       'Thoi_Diem_Tai',
     ],
@@ -455,6 +544,7 @@ export async function exportAttachmentsZip(
 
     for (const att of mealAtts) {
       const zipPath = `${folderPrefix}/${meal.code}_${att.type}_${att.filename}`;
+      const publicUrl = getAttachmentPublicUrl(att.id);
       if (att.dataUrl && att.dataUrl.startsWith('data:')) {
         const commaIdx = att.dataUrl.indexOf(',');
         const header = att.dataUrl.slice(0, commaIdx);
@@ -476,6 +566,7 @@ export async function exportAttachmentsZip(
         String(meal.totalPaidVnd),
         att.type,
         zipPath,
+        publicUrl,
         `"${att.uploadedBy}"`,
         att.uploadedAt,
       ]);
@@ -488,6 +579,7 @@ export async function exportAttachmentsZip(
         totalPaidVnd: meal.totalPaidVnd,
         attachmentType: att.type,
         zipPath,
+        publicImageUrl: publicUrl,
         uploadedBy: att.uploadedBy,
         uploadedAt: att.uploadedAt,
       });
@@ -583,7 +675,18 @@ export function openReimbursementPdfPrintWindow(
           <td>${attendees.length} người:<br/><span style="font-size:11px;color:#334155">${attendees.join(', ')}</span></td>
           <td style="text-align:right;font-weight:bold">${formatVnd(meal.totalPaidVnd)}</td>
           <td style="text-align:right">${formatVnd(r?.eligibleAmountVnd || 0)}</td>
-          <td style="font-size:11px">${atts.map((a) => `[${a.type === 'PAYMENT_PROOF' ? 'UNC/Bill' : 'HĐ VAT'}] ${a.filename}`).join('<br/>') || '—'}</td>
+          <td style="font-size:11px">${
+            canSeeAttachments
+              ? atts
+                  .map(
+                    (a) =>
+                      `<a href="${getAttachmentPublicUrl(a.id)}" target="_blank" rel="noopener noreferrer" style="color:#0f766e;text-decoration:underline;font-weight:bold" title="Click để mở xem ảnh chứng từ gốc">🔗 [${
+                        a.type === 'PAYMENT_PROOF' ? 'UNC/Bill' : 'HĐ VAT'
+                      }] ${a.filename}</a>`
+                  )
+                  .join('<br/>') || '—'
+              : `(${atts.length} chứng từ)`
+          }</td>
         </tr>
       `;
     })
@@ -595,15 +698,18 @@ export function openReimbursementPdfPrintWindow(
     for (const meal of targetMeals) {
       const atts = state.attachments.filter((a) => a.mealId === meal.id && a.dataUrl);
       for (const att of atts) {
+        const publicUrl = getAttachmentPublicUrl(att.id);
         cards.push(`
           <div style="border:1px solid #cbd5e1;border-radius:8px;padding:12px;margin-bottom:14px;page-break-inside:avoid">
             <div style="font-size:12px;font-weight:bold;margin-bottom:6px">
               Mã bữa: ${meal.code} (${formatDateVN(meal.occurredAt)}) — ${meal.venue} — Số tiền: ${formatVnd(meal.totalPaidVnd)}
             </div>
             <div style="font-size:11px;color:#475569;margin-bottom:8px">
-              Loại chứng từ: ${att.type === 'PAYMENT_PROOF' ? 'Ảnh chứng từ thanh toán' : 'Hóa đơn VAT'} • File: ${att.filename}
+              Loại chứng từ: ${att.type === 'PAYMENT_PROOF' ? 'Ảnh chứng từ thanh toán' : 'Hóa đơn VAT'} • File: <a href="${publicUrl}" target="_blank" rel="noopener noreferrer" style="color:#0f766e;font-weight:bold;text-decoration:underline">${att.filename} (Click mở ảnh gốc)</a>
             </div>
-            <img src="${att.dataUrl}" alt="${att.filename}" style="max-width:340px;max-height:440px;border:1px solid #e2e8f0;border-radius:4px" />
+            <a href="${publicUrl}" target="_blank" rel="noopener noreferrer" title="Click để mở ảnh kích thước lớn trên trình duyệt">
+              <img src="${att.dataUrl}" alt="${att.filename}" style="max-width:340px;max-height:440px;border:1px solid #e2e8f0;border-radius:4px" />
+            </a>
           </div>
         `);
       }

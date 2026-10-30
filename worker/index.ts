@@ -39,6 +39,44 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+function dataUrlToImageResponse(dataUrl: string, filename = 'chung-tu.jpg'): Response | null {
+  if (!dataUrl || !dataUrl.startsWith('data:')) return null;
+  const commaIdx = dataUrl.indexOf(',');
+  if (commaIdx === -1) return null;
+  const header = dataUrl.slice(5, commaIdx);
+  const dataPart = dataUrl.slice(commaIdx + 1);
+  const isBase64 = header.includes(';base64');
+  const mimeType = header.split(';')[0] || 'image/jpeg';
+
+  if (isBase64) {
+    const binaryStr = atob(dataPart);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Disposition': `inline; filename="${encodeURIComponent(filename)}"`,
+        'Cache-Control': 'public, max-age=86400',
+        ...CORS_HEADERS,
+      },
+    });
+  }
+
+  const decoded = decodeURIComponent(dataPart);
+  return new Response(decoded, {
+    status: 200,
+    headers: {
+      'Content-Type': mimeType,
+      'Content-Disposition': `inline; filename="${encodeURIComponent(filename)}"`,
+      'Cache-Control': 'public, max-age=86400',
+      ...CORS_HEADERS,
+    },
+  });
+}
+
 function sanitizeStateForRole(state: AppState, role: RoleKey): AppState {
   if (role === 'VIEWER' && !state.settings?.viewerCanSeeAttachments) {
     return {
@@ -461,14 +499,24 @@ export default {
       }
     }
 
-    // 3. /api/attachments/:id (GET) - AC-18 RBAC check
+    // 3. /api/attachments/:id (GET) - AC-18 RBAC check + Direct clickable image view (?view=1)
     if (pathname.startsWith('/api/attachments/') && request.method === 'GET') {
       try {
-        const id = pathname.replace('/api/attachments/', '').trim();
-        const role = ((url.searchParams.get('role') || 'VIEWER').toUpperCase() as RoleKey);
-        const { state } = await loadStateFromD1(env.DB);
+        const rawPath = pathname.replace('/api/attachments/', '').trim();
+        const isImageSubpath = rawPath.endsWith('/image') || rawPath.endsWith('/view');
+        const id = decodeURIComponent(
+          rawPath.replace(/\/(image|view)$/, '').trim()
+        );
+        const explicitRole = url.searchParams.get('role')?.toUpperCase() as RoleKey | undefined;
+        const wantsDirectImage =
+          isImageSubpath ||
+          url.searchParams.get('view') === '1' ||
+          url.searchParams.get('raw') === '1' ||
+          (!explicitRole && (request.headers.get('Accept') || '').includes('text/html'));
 
-        if (role === 'VIEWER' && !state.settings?.viewerCanSeeAttachments) {
+        const { state } = await loadStateFromD1(env.DB, false);
+
+        if (explicitRole === 'VIEWER' && !state.settings?.viewerCanSeeAttachments) {
           return jsonResponse(
             {
               error:
@@ -478,12 +526,34 @@ export default {
           );
         }
 
-        const attachment = (state.attachments || []).find((a) => a.id === id);
-        if (!attachment) {
+        const attachmentMeta = (state.attachments || []).find((a) => a.id === id);
+        await ensureAttachmentsTable(env.DB);
+        const attRow = await env.DB.prepare(
+          `SELECT data_url FROM horus_attachments_data WHERE id = ?1 LIMIT 1`
+        )
+          .bind(id)
+          .first<{ data_url: string }>();
+
+        const finalDataUrl = attRow?.data_url || attachmentMeta?.dataUrl || '';
+
+        if (!attachmentMeta && !finalDataUrl) {
           return jsonResponse({ error: 'Không tìm thấy chứng từ.' }, 404);
         }
 
-        return jsonResponse({ attachment });
+        if (wantsDirectImage && finalDataUrl) {
+          const imgRes = dataUrlToImageResponse(
+            finalDataUrl,
+            attachmentMeta?.filename || `${id}.jpg`
+          );
+          if (imgRes) return imgRes;
+        }
+
+        return jsonResponse({
+          attachment: {
+            ...(attachmentMeta || { id, filename: `${id}.jpg` }),
+            dataUrl: finalDataUrl,
+          },
+        });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return jsonResponse({ error: msg }, 500);

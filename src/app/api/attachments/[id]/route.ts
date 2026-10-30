@@ -8,12 +8,15 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
-    const role = ((req.nextUrl.searchParams.get('role') || 'VIEWER').toUpperCase() as RoleKey);
+    const explicitRole = req.nextUrl.searchParams.get('role')?.toUpperCase() as RoleKey | undefined;
+    const wantsDirectImage =
+      req.nextUrl.searchParams.get('view') === '1' ||
+      req.nextUrl.searchParams.get('raw') === '1';
 
     const { state } = await loadAppStateFromServer();
 
     // AC-18: Viewer chưa có quyền xem chứng từ -> Không tải được ảnh qua giao diện lẫn đường dẫn API
-    if (role === 'VIEWER' && !state.settings.viewerCanSeeAttachments) {
+    if (explicitRole === 'VIEWER' && !state.settings.viewerCanSeeAttachments) {
       return NextResponse.json(
         {
           error:
@@ -26,6 +29,24 @@ export async function GET(
     const attachment = state.attachments.find((a) => a.id === id);
     if (!attachment) {
       return NextResponse.json({ error: 'Không tìm thấy chứng từ.' }, { status: 404 });
+    }
+
+    if (wantsDirectImage && attachment.dataUrl && attachment.dataUrl.startsWith('data:')) {
+      const commaIdx = attachment.dataUrl.indexOf(',');
+      const header = attachment.dataUrl.slice(5, commaIdx);
+      const dataPart = attachment.dataUrl.slice(commaIdx + 1);
+      const isBase64 = header.includes(';base64');
+      const mimeType = header.split(';')[0] || 'image/jpeg';
+      const buf = isBase64
+        ? Buffer.from(dataPart, 'base64')
+        : Buffer.from(decodeURIComponent(dataPart), 'utf-8');
+      return new NextResponse(buf, {
+        status: 200,
+        headers: {
+          'Content-Type': mimeType,
+          'Content-Disposition': `inline; filename="${encodeURIComponent(attachment.filename)}"`,
+        },
+      });
     }
 
     return NextResponse.json({ attachment });
