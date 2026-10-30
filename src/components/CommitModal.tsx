@@ -69,11 +69,20 @@ export default function CommitModal({
         },
       };
 
+      // Gửi payload nhẹ: tách bỏ dataUrl vì ảnh đã được lưu trên bảng horus_attachments_data
+      const lightweightState: AppState = {
+        ...updatedState,
+        attachments: (updatedState.attachments || []).map((att) => ({
+          ...att,
+          dataUrl: '',
+        })),
+      };
+
       const res = await fetch('/api/commit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          state: updatedState,
+          state: lightweightState,
           message: commitMessage.trim() || `Commit dữ liệu v${(state.version || 1) + 1}`,
           authorName: currentUserName,
           authorRole: role,
@@ -87,7 +96,18 @@ export default function CommitModal({
           text: data.error || 'Có lỗi xảy ra khi commit dữ liệu lên hệ thống.',
         });
       } else {
-        onCommitted(data.state);
+        const localDataUrlMap = new Map<string, string>();
+        for (const att of state.attachments || []) {
+          if (att.dataUrl) localDataUrlMap.set(att.id, att.dataUrl);
+        }
+        const hydratedCommittedState: AppState = {
+          ...data.state,
+          attachments: (data.state.attachments || []).map((att: any) => ({
+            ...att,
+            dataUrl: att.dataUrl || localDataUrlMap.get(att.id) || '',
+          })),
+        };
+        onCommitted(hydratedCommittedState);
         setCommitMessage(
           `Cập nhật dữ liệu bữa ăn & đối soát hoàn ứng Horus (v${(data.state.version || 1) + 1})`
         );

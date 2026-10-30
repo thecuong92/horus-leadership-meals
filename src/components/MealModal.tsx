@@ -3,18 +3,30 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   Camera,
   Check,
   CheckCircle2,
   FileText,
   Image as ImageIcon,
+  Loader2,
+  Plus,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   UserPlus,
   X,
   XCircle,
 } from 'lucide-react';
+import { createWorker } from 'tesseract.js';
+import {
+  BillOcrResult,
+  compressTransferImage,
+  getMergedRecipientMappings,
+  normalizeAsciiUpper,
+  parseBankBillText,
+} from '@/lib/bill-ocr';
 import {
   allocateEqualVnd,
   allocateWeightedVnd,
@@ -39,6 +51,7 @@ import {
   MealSession,
   MealStatus,
   Member,
+  RecipientVenueMapping,
   RoleKey,
 } from '@/lib/types';
 
@@ -60,6 +73,7 @@ interface MealModalProps {
     allocations: MealCostAllocation[];
     attachments: MealAttachment[];
     newGuests: Member[];
+    updatedRecipientMappings?: RecipientVenueMapping[];
     auditAction: string;
     auditSummary: string;
   }) => void;
@@ -129,6 +143,18 @@ export default function MealModal({
   const [previewAttachment, setPreviewAttachment] = useState<MealAttachment | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
+  // Trạng thái Nhận diện Ảnh Chuyển khoản (Smart Bill OCR) & Danh bạ Người nhận -> Quán ăn
+  const [isOcrRunning, setIsOcrRunning] = useState<boolean>(false);
+  const [ocrResult, setOcrResult] = useState<BillOcrResult | null>(null);
+  const [localMappings, setLocalMappings] = useState<RecipientVenueMapping[]>(() =>
+    getMergedRecipientMappings(state.recipientMappings)
+  );
+  const [showMappingManager, setShowMappingManager] = useState<boolean>(false);
+  const [newMapRecipient, setNewMapRecipient] = useState<string>('');
+  const [newMapAccount, setNewMapAccount] = useState<string>('');
+  const [newMapVenue, setNewMapVenue] = useState<string>('');
+  const [newMapProgramId, setNewMapProgramId] = useState<string>('prog-lunch');
+
   const recentVenues = useMemo(() => {
     const set = new Set<string>();
     for (const m of state.meals) {
@@ -142,6 +168,9 @@ export default function MealModal({
     setErrorMessage('');
     setTempGuests([]);
     setMemberSearch('');
+    setOcrResult(null);
+    setIsOcrRunning(false);
+    setLocalMappings(getMergedRecipientMappings(state.recipientMappings));
 
     if (editingMeal) {
       setProgramId(editingMeal.programId);
@@ -311,42 +340,132 @@ export default function MealModal({
     setNewGuestName('');
   };
 
-  const handleFileUpload = (
+  const runBillOcrOnDataUrl = async (dataUrl: string) => {
+    if (!dataUrl) return;
+    setIsOcrRunning(true);
+    try {
+      const worker = await createWorker('eng', 1, {
+        langPath: '/tessdata',
+        gzip: false,
+      });
+      await worker.setParameters({ tessedit_pageseg_mode: '11' as never });
+      const {
+        data: { text },
+      } = await worker.recognize(dataUrl);
+      await worker.terminate();
+
+      const parsed = parseBankBillText(text, localMappings, state.members);
+      setOcrResult(parsed);
+
+      // Tự động điền các trường nhận diện được vào form
+      if (parsed.amountVnd && parsed.amountVnd > 0) {
+        setTotalPaidVnd(parsed.amountVnd);
+      }
+      if (parsed.occurredAtInput) {
+        setOccurredAtInput(parsed.occurredAtInput);
+      }
+      if (parsed.matchedProgramId) {
+        setProgramId(parsed.matchedProgramId);
+      }
+      if (parsed.matchedVenue) {
+        setVenue(parsed.matchedVenue);
+      }
+      if (parsed.matchedPayerMemberId) {
+        setPayerMemberId(parsed.matchedPayerMemberId);
+      }
+      playSuccessSound();
+    } catch (err) {
+      console.error('OCR Error:', err);
+    } finally {
+      setIsOcrRunning(false);
+    }
+  };
+
+  const handleSaveRecipientRule = (
+    recipName: string,
+    accNumber: string | null,
+    targetVenue: string,
+    targetProgId: string
+  ): RecipientVenueMapping[] => {
+    const cleanRecip = normalizeAsciiUpper(recipName);
+    const cleanVenueName = targetVenue.trim();
+    if (!cleanRecip || !cleanVenueName) return localMappings;
+
+    const existingIdx = localMappings.findIndex(
+      (m) => normalizeAsciiUpper(m.recipientName) === cleanRecip
+    );
+    let nextMappings = [...localMappings];
+
+    if (existingIdx >= 0) {
+      const ex = nextMappings[existingIdx];
+      const nextKeywords = Array.from(
+        new Set([...(ex.accountKeywords || []), ...(accNumber ? [accNumber] : [])])
+      );
+      nextMappings[existingIdx] = {
+        ...ex,
+        venueName: cleanVenueName,
+        defaultProgramId: targetProgId,
+        accountKeywords: nextKeywords,
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      nextMappings = [
+        {
+          id: `map-${Date.now()}`,
+          recipientName: cleanRecip,
+          accountKeywords: accNumber ? [accNumber] : [],
+          venueName: cleanVenueName,
+          defaultProgramId: targetProgId,
+          updatedAt: new Date().toISOString(),
+        },
+        ...nextMappings,
+      ];
+    }
+
+    setLocalMappings(nextMappings);
+    return nextMappings;
+  };
+
+  const handleFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
     attType: AttachmentType
   ) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file) => {
-      if (file.size > 10 * 1024 * 1024) {
-        playWarningSound();
-        setErrorMessage(`File "${file.name}" vượt quá giới hạn 10MB.`);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = typeof reader.result === 'string' ? reader.result : '';
-        const newAtt: MealAttachment = {
-          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          mealId: editingMeal?.id || 'pending',
-          type: attType,
-          filename: file.name,
-          mimeType: file.type || 'image/jpeg',
-          sizeBytes: file.size,
-          dataUrl,
-          uploadedAt: new Date().toISOString(),
-          uploadedBy: currentUserName,
-        };
-        setAttachments((prev) => [...prev, newAtt]);
-        if (attType === 'INVOICE') {
-          setHasInvoice(true);
-        }
-        playTickSound(true);
-      };
-      reader.readAsDataURL(file);
-    });
+    const fileList = Array.from(files);
     e.target.value = '';
+
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      if (file.size > 15 * 1024 * 1024) {
+        playWarningSound();
+        setErrorMessage(`File "${file.name}" vượt quá giới hạn 15MB.`);
+        continue;
+      }
+
+      const compressed = await compressTransferImage(file);
+      const newAtt: MealAttachment = {
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        mealId: editingMeal?.id || 'pending',
+        type: attType,
+        filename: file.name,
+        mimeType: compressed.mimeType,
+        sizeBytes: compressed.sizeBytes,
+        dataUrl: compressed.dataUrl,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: currentUserName,
+      };
+      setAttachments((prev) => [...prev, newAtt]);
+      if (attType === 'INVOICE') {
+        setHasInvoice(true);
+      }
+      playTickSound(true);
+
+      // Tự động chạy OCR nhận diện trên bức ảnh đầu tiên vừa tải lên
+      if (i === 0 && compressed.dataUrl.startsWith('data:image/')) {
+        void runBillOcrOnDataUrl(compressed.dataUrl);
+      }
+    }
   };
 
   const handleAddDemoPaymentProof = () => {
@@ -459,6 +578,17 @@ export default function MealModal({
       mealId,
     }));
 
+    // Nếu có nhận diện được Người nhận từ ảnh Bill và người dùng đã nhập Tên quán -> Tự động ghi nhớ Người nhận = Quán này cho các lần sau
+    let finalMappings = localMappings;
+    if (ocrResult?.recipientName && venue.trim()) {
+      finalMappings = handleSaveRecipientRule(
+        ocrResult.recipientName,
+        ocrResult.recipientAccount,
+        venue.trim(),
+        programId
+      );
+    }
+
     playSuccessSound();
     onSaveMeal({
       meal: mealObj,
@@ -466,15 +596,13 @@ export default function MealModal({
       allocations: finalAllocations,
       attachments: normalizedAttachments,
       newGuests: tempGuests,
+      updatedRecipientMappings: finalMappings,
       auditAction: editingMeal ? 'UPDATE_MEAL' : 'CREATE_MEAL',
       auditSummary: `${editingMeal ? 'Cập nhật' : 'Tạo mới'} bữa ăn ${code} (${cleanVenue}) — ${formatVnd(cleanTotal)} — ${finalAttendeeIds.length} người tham gia — Trạng thái: ${finalStatus}`,
     });
 
     onClose();
   };
-
-  const paymentProofsCount = attachments.filter((a) => a.type === 'PAYMENT_PROOF').length;
-  const invoicesCount = attachments.filter((a) => a.type === 'INVOICE').length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-2 sm:p-3 backdrop-blur-xs overflow-y-auto animate-fade-in">
@@ -502,6 +630,244 @@ export default function MealModal({
 
         {/* Compact Body */}
         <div className="p-4 overflow-y-auto space-y-4 flex-1">
+          {/* =================================================================
+              KHUNG TẢI ẢNH BILL & TỰ ĐỘNG NHẬN DIỆN (SMART BILL OCR)
+             ================================================================= */}
+          {!isReadOnly && (
+            <div className="rounded-2xl border-2 border-teal-500/70 bg-gradient-to-r from-teal-50/90 via-emerald-50/60 to-indigo-50/60 p-3.5 shadow-2xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <span>Tải Ảnh Chuyển khoản → Tự động Điền Tiền, Quán ăn & Ngày giờ</span>
+                      <span className="px-1.5 py-0.5 rounded bg-teal-600 text-white text-[10px]">
+                        AI OCR
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600">
+                      Hệ thống tự đọc <strong>Số tiền</strong>, <strong>Ngày giờ</strong> và đối chiếu{' '}
+                      <strong>Tên người nhận</strong> với Danh bạ Quán ăn đã lưu.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <label className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-extrabold cursor-pointer flex items-center gap-1.5 shadow-xs transition active:scale-95">
+                    {isOcrRunning ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Đang đọc ảnh Bill...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>+ Chọn Ảnh Chuyển khoản (Tự điền)</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={(e) => handleFileUpload(e, 'PAYMENT_PROOF')}
+                      className="hidden"
+                    />
+                  </label>
+
+                  {attachments[0]?.dataUrl && !isOcrRunning && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playClickSound();
+                        void runBillOcrOnDataUrl(attachments[0].dataUrl);
+                      }}
+                      className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 text-xs font-bold flex items-center gap-1"
+                      title="Quét lại thông tin từ ảnh đính kèm hiện tại"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" /> Quét lại ảnh
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClickSound();
+                      setShowMappingManager((v) => !v);
+                    }}
+                    className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold flex items-center gap-1"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Danh bạ Người nhận ↔ Quán ({localMappings.length})</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Hiển thị Kết quả Nhận diện từ Ảnh Chuyển khoản */}
+              {ocrResult && (
+                <div className="mt-2.5 pt-2.5 border-t border-teal-200/80 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs animate-fade-in">
+                  <div className="bg-white/90 rounded-xl p-2 border border-teal-200">
+                    <div className="text-[10px] font-bold uppercase text-slate-400">
+                      Số tiền trên Bill
+                    </div>
+                    <div className="font-extrabold text-teal-700 text-sm mt-0.5">
+                      {ocrResult.amountVnd ? formatVnd(ocrResult.amountVnd) : 'Chưa rõ'}
+                    </div>
+                  </div>
+
+                  <div className="bg-white/90 rounded-xl p-2 border border-teal-200">
+                    <div className="text-[10px] font-bold uppercase text-slate-400">
+                      Người nhận tiền
+                    </div>
+                    <div className="font-extrabold text-slate-900 truncate mt-0.5">
+                      {ocrResult.recipientName || 'Chưa nhận diện'}
+                    </div>
+                    {ocrResult.recipientAccount && (
+                      <div className="text-[10px] font-mono text-slate-500 truncate">
+                        TK: {ocrResult.recipientAccount}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-white/90 rounded-xl p-2 border border-teal-200">
+                    <div className="text-[10px] font-bold uppercase text-slate-400">
+                      Tự động suy ra Quán
+                    </div>
+                    {ocrResult.matchedVenue ? (
+                      <div className="font-extrabold text-emerald-700 mt-0.5 flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{ocrResult.matchedVenue}</span>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-amber-700 font-semibold mt-0.5">
+                        Người nhận mới — Gõ tên quán ở mục 3 để hệ thống tự nhớ!
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-white/90 rounded-xl p-2 border border-teal-200">
+                    <div className="text-[10px] font-bold uppercase text-slate-400">
+                      Ngày giờ trên Bill
+                    </div>
+                    <div className="font-extrabold text-slate-900 mt-0.5">
+                      {ocrResult.dateDisplayVN || 'Giữ theo mặc định'}
+                    </div>
+                    {ocrResult.senderName && (
+                      <div className="text-[10px] text-slate-500 truncate">
+                        Từ: {ocrResult.senderName}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Quản lý Danh bạ Người nhận tiền ↔ Quán ăn */}
+              {showMappingManager && (
+                <div className="mt-3 pt-3 border-t border-teal-200/80 bg-white rounded-xl p-3 border border-slate-200 space-y-2.5 animate-slide-up">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-extrabold text-slate-900">
+                      📖 Quy tắc Lưu trước: Chuyển khoản cho Người nhận X → Tự hiểu đang ăn ở Quán Y
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowMappingManager(false)}
+                      className="text-[11px] text-slate-500 hover:text-slate-800 font-bold"
+                    >
+                      Đóng lại
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {localMappings.map((mp) => (
+                      <div
+                        key={mp.id}
+                        className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-extrabold text-slate-900 truncate">
+                            {mp.recipientName}{' '}
+                            <span className="text-teal-700">→ {mp.venueName}</span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 truncate">
+                            {mp.defaultProgramId === 'prog-dinner' ? 'Tối Thứ 5' : 'Ăn trưa'}
+                            {mp.accountKeywords && mp.accountKeywords.length > 0
+                              ? ` • TK: ${mp.accountKeywords.slice(0, 2).join(', ')}`
+                              : ''}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playClickSound();
+                            setLocalMappings((prev) =>
+                              prev.filter((item) => item.id !== mp.id)
+                            );
+                          }}
+                          className="text-slate-400 hover:text-rose-600 p-1 shrink-0"
+                          title="Xóa quy tắc này"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Form thêm nhanh quy tắc Người nhận -> Quán ăn */}
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
+                    <input
+                      type="text"
+                      placeholder="Tên người nhận trên Bill (VD: VU THI TUYET ANH)"
+                      value={newMapRecipient}
+                      onChange={(e) => setNewMapRecipient(e.target.value)}
+                      className="px-2.5 py-1 rounded-lg border border-slate-300 text-xs flex-1 min-w-[170px]"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Số TK (Tùy chọn)"
+                      value={newMapAccount}
+                      onChange={(e) => setNewMapAccount(e.target.value)}
+                      className="px-2.5 py-1 rounded-lg border border-slate-300 text-xs w-36"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Tên quán ăn (VD: Quán bún dọc mùng)"
+                      value={newMapVenue}
+                      onChange={(e) => setNewMapVenue(e.target.value)}
+                      className="px-2.5 py-1 rounded-lg border border-slate-300 text-xs flex-1 min-w-[160px]"
+                    />
+                    <select
+                      value={newMapProgramId}
+                      onChange={(e) => setNewMapProgramId(e.target.value)}
+                      className="px-2 py-1 rounded-lg border border-slate-300 text-xs bg-slate-50 font-semibold"
+                    >
+                      <option value="prog-lunch">Ăn trưa</option>
+                      <option value="prog-dinner">Tối Thứ 5</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newMapRecipient.trim() || !newMapVenue.trim()) return;
+                        playTickSound(true);
+                        handleSaveRecipientRule(
+                          newMapRecipient.trim(),
+                          newMapAccount.trim() || null,
+                          newMapVenue.trim(),
+                          newMapProgramId
+                        );
+                        setNewMapRecipient('');
+                        setNewMapAccount('');
+                        setNewMapVenue('');
+                      }}
+                      className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Lưu quy tắc
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {errorMessage && (
             <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2 animate-slide-up">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />

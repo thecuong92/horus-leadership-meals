@@ -164,6 +164,16 @@ export interface SystemSettings {
   githubToken?: string;
 }
 
+export interface RecipientVenueMapping {
+  id: string;
+  recipientName: string; // VD: "VU THI TUYET ANH", "NGUYEN THI MAI LAN"
+  accountKeywords?: string[]; // VD: ["MS00P00000001093528", "2899991980"]
+  venueName: string; // VD: "Quán bún dọc mùng"
+  defaultProgramId?: string; // VD: "prog-lunch" hoặc "prog-dinner"
+  bankName?: string; // VD: "Techcombank", "Sacombank"
+  updatedAt: string;
+}
+
 export interface AppState {
   version: number;
   lastUpdatedAt: string;
@@ -177,6 +187,7 @@ export interface AppState {
   reimbursementBatches: ReimbursementBatch[];
   reimbursementItems: ReimbursementItem[];
   reimbursementPayments: ReimbursementPayment[];
+  recipientMappings?: RecipientVenueMapping[];
   auditLogs: AuditLog[];
   commits: SystemCommit[];
   settings: SystemSettings;

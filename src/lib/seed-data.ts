@@ -1,3 +1,4 @@
+import { DEFAULT_RECIPIENT_MAPPINGS } from './bill-ocr';
 import { allocateEqualVnd } from './calculations';
 import {
   AppState,
@@ -184,6 +185,7 @@ export function createInitialSeedState(): AppState {
     reimbursementBatches: [],
     reimbursementItems: [],
     reimbursementPayments: [],
+    recipientMappings: DEFAULT_RECIPIENT_MAPPINGS,
     auditLogs: [
       {
         id: 'audit-init-zero',

@@ -1,3 +1,4 @@
+import { DEFAULT_RECIPIENT_MAPPINGS } from '../src/lib/bill-ocr';
 import { createInitialSeedState } from '../src/lib/seed-data';
 import { AppState, RoleKey, SystemCommit } from '../src/lib/types';
 
@@ -51,14 +52,50 @@ function sanitizeStateForRole(state: AppState, role: RoleKey): AppState {
   return state;
 }
 
-async function loadStateFromD1(db: D1Database): Promise<{ state: AppState; source: string }> {
+async function ensureAttachmentsTable(db: D1Database): Promise<void> {
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS horus_attachments_data (
+        id TEXT PRIMARY KEY,
+        meal_id TEXT,
+        data_url TEXT,
+        updated_at TEXT
+      )`
+    )
+    .run();
+}
+
+async function loadStateFromD1(
+  db: D1Database,
+  hydrateAttachments = true
+): Promise<{ state: AppState; source: string }> {
+  await ensureAttachmentsTable(db);
+
   const row = await db
     .prepare(`SELECT state_json FROM horus_app_state WHERE id = 'main'`)
     .first<{ state_json: string }>();
 
   if (row && row.state_json) {
+    const parsed = JSON.parse(row.state_json) as AppState;
+    if (!parsed.recipientMappings || parsed.recipientMappings.length === 0) {
+      parsed.recipientMappings = DEFAULT_RECIPIENT_MAPPINGS;
+    }
+
+    if (hydrateAttachments && parsed.attachments && parsed.attachments.length > 0) {
+      const attRows = await db
+        .prepare(`SELECT id, data_url FROM horus_attachments_data`)
+        .all<{ id: string; data_url: string }>();
+      const attMap = new Map(
+        (attRows.results || []).map((r) => [r.id, r.data_url])
+      );
+      parsed.attachments = parsed.attachments.map((att) => ({
+        ...att,
+        dataUrl: attMap.get(att.id) || att.dataUrl || '',
+      }));
+    }
+
     return {
-      state: JSON.parse(row.state_json) as AppState,
+      state: parsed,
       source: 'CLOUDFLARE_D1_APAC',
     };
   }
@@ -86,8 +123,36 @@ async function saveStateToD1(
   commitMessage: string,
   updatedBy: string
 ): Promise<void> {
+  await ensureAttachmentsTable(db);
   const nowIso = new Date().toISOString();
   state.lastUpdatedAt = nowIso;
+
+  // 1. Lưu các ảnh có dataUrl sang bảng riêng horus_attachments_data để giải phóng CPU cho state_json
+  for (const att of state.attachments || []) {
+    if (att.dataUrl && att.dataUrl.length > 20) {
+      await db
+        .prepare(
+          `INSERT INTO horus_attachments_data (id, meal_id, data_url, updated_at)
+           VALUES (?1, ?2, ?3, ?4)
+           ON CONFLICT(id) DO UPDATE SET
+             meal_id = excluded.meal_id,
+             data_url = excluded.data_url,
+             updated_at = excluded.updated_at`
+        )
+        .bind(att.id, att.mealId, att.dataUrl, nowIso)
+        .run();
+    }
+  }
+
+  // 2. Tạo bản state gọn nhẹ (tách dataUrl khỏi chuỗi JSON chính trong horus_app_state)
+  const lightweightState: AppState = {
+    ...state,
+    attachments: (state.attachments || []).map((att) => ({
+      ...att,
+      dataUrl: '',
+    })),
+  };
+
   await db
     .prepare(
       `INSERT INTO horus_app_state (id, state_json, version, last_commit_message, updated_by, updated_at)
@@ -99,7 +164,13 @@ async function saveStateToD1(
          updated_by = excluded.updated_by,
          updated_at = excluded.updated_at`
     )
-    .bind(JSON.stringify(state), state.version, commitMessage, updatedBy, nowIso)
+    .bind(
+      JSON.stringify(lightweightState),
+      state.version,
+      commitMessage,
+      updatedBy,
+      nowIso
+    )
     .run();
 }
 
@@ -213,6 +284,10 @@ function mergeMultiDeviceStates(
       server.reimbursementPayments,
       client.reimbursementPayments
     ),
+    recipientMappings: mergeById(
+      server.recipientMappings || DEFAULT_RECIPIENT_MAPPINGS,
+      client.recipientMappings || DEFAULT_RECIPIENT_MAPPINGS
+    ),
     auditLogs: mergeById(server.auditLogs, client.auditLogs).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     ),
@@ -236,7 +311,7 @@ export default {
       try {
         if (request.method === 'GET') {
           const role = ((url.searchParams.get('role') || 'ADMIN').toUpperCase() as RoleKey);
-          const { state, source } = await loadStateFromD1(env.DB);
+          const { state, source } = await loadStateFromD1(env.DB, true);
           return jsonResponse({
             state: sanitizeStateForRole(state, role),
             source,
@@ -252,6 +327,7 @@ export default {
             role?: string;
             commitMessage?: string;
             forceReplace?: boolean;
+            skipLoad?: boolean;
           };
           const incomingState = body.state;
           const role = ((body.role || 'ADMIN').toUpperCase() as RoleKey);
@@ -267,12 +343,24 @@ export default {
             );
           }
 
-          const { state: currentServerState } = await loadStateFromD1(env.DB);
-          const mergedState = mergeMultiDeviceStates(
-            currentServerState,
-            incomingState,
-            Boolean(body.forceReplace)
-          );
+          let mergedState: AppState;
+          if (body.skipLoad && body.forceReplace) {
+            mergedState = {
+              ...incomingState,
+              recipientMappings:
+                incomingState.recipientMappings && incomingState.recipientMappings.length > 0
+                  ? incomingState.recipientMappings
+                  : DEFAULT_RECIPIENT_MAPPINGS,
+              lastUpdatedAt: new Date().toISOString(),
+            };
+          } else {
+            const { state: currentServerState } = await loadStateFromD1(env.DB, false);
+            mergedState = mergeMultiDeviceStates(
+              currentServerState,
+              incomingState,
+              Boolean(body.forceReplace)
+            );
+          }
 
           await saveStateToD1(
             env.DB,
@@ -281,8 +369,9 @@ export default {
             role
           );
 
+          const { state: fullHydratedState } = await loadStateFromD1(env.DB, true);
           return jsonResponse({
-            state: sanitizeStateForRole(mergedState, role),
+            state: sanitizeStateForRole(fullHydratedState, role),
             savedTargets: ['CLOUDFLARE_D1_APAC'],
             warnings: [],
           });
@@ -310,20 +399,12 @@ export default {
           );
         }
 
-        const { state: serverState } = await loadStateFromD1(env.DB);
-        const stateToCommit: AppState = body.state ? { ...body.state } : { ...serverState };
+        const { state: serverState } = await loadStateFromD1(env.DB, false);
+        const stateToCommit: AppState = body.state
+          ? mergeMultiDeviceStates(serverState, body.state, false)
+          : { ...serverState, version: (serverState.version || 1) + 1 };
 
-        const serverAttMap = new Map(
-          (serverState.attachments || []).map((a) => [a.id, a.dataUrl])
-        );
-        stateToCommit.attachments = (stateToCommit.attachments || []).map((att) => ({
-          ...att,
-          dataUrl: att.dataUrl || serverAttMap.get(att.id) || '',
-        }));
-
-        const nextVersion = (stateToCommit.version || 1) + 1;
-        stateToCommit.version = nextVersion;
-
+        const nextVersion = stateToCommit.version;
         const commitId = `commit-${Date.now()}`;
         const nowIso = new Date().toISOString();
         const message =
@@ -366,12 +447,13 @@ export default {
           .bind(commitId, nextVersion, message, authorName, authorRole, nowIso)
           .run();
 
+        const { state: fullHydratedState } = await loadStateFromD1(env.DB, true);
         return jsonResponse({
           success: true,
           commit: newCommitEntry,
           savedTargets,
           warnings: [],
-          state: stateToCommit,
+          state: fullHydratedState,
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

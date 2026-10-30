@@ -73,6 +73,7 @@ import {
   MealSession,
   Member,
   MemberReportRow,
+  RecipientVenueMapping,
   ReimbursementBatch,
   ReimbursementItem,
   ReimbursementPayment,
@@ -244,37 +245,59 @@ export default function HorusMealsApp() {
   }, [fetchStateFromServer, role, isMealModalOpen]);
 
   const persistStateToServer = useCallback(
-    async (nextState: AppState, summary?: string, forceReplace = false) => {
+    async (
+      nextState: AppState,
+      summary?: string,
+      forceReplace = false,
+      newAttachmentIds?: string[]
+    ) => {
       setState(nextState);
       setSyncStatus('Đang đồng bộ lên Cloud...');
       if (summary) {
         showToast(summary);
       }
-      try {
-        const res = await fetch('/api/state', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            state: nextState,
-            role,
-            commitMessage: summary,
-            forceReplace,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.state) {
-            setState(data.state);
+
+      // Chỉ gửi dataUrl của các ảnh mới tải lên trong lần lưu này để payload siêu nhẹ (< 80KB), chống lỗi 1102
+      const newIdsSet = new Set(newAttachmentIds || []);
+      const uploadState: AppState = {
+        ...nextState,
+        attachments: (nextState.attachments || []).map((att) => ({
+          ...att,
+          dataUrl:
+            forceReplace || newIdsSet.size === 0 || newIdsSet.has(att.id)
+              ? att.dataUrl
+              : '',
+        })),
+      };
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const res = await fetch('/api/state', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              state: uploadState,
+              role,
+              commitMessage: summary,
+              forceReplace,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.state) {
+              setState(data.state);
+            }
+            const targets = (data.savedTargets || ['CLOUDFLARE_D1']).join(', ');
+            const finalVer = data.state?.version ?? nextState.version;
+            setSyncStatus(`Đã đồng bộ Cloud (${targets} • v${finalVer})`);
+            return;
           }
-          const targets = (data.savedTargets || ['CLOUDFLARE_D1']).join(', ');
-          const finalVer = data.state?.version ?? nextState.version;
-          setSyncStatus(`Đã đồng bộ Cloud (${targets} • v${finalVer})`);
-        } else {
-          setSyncStatus('Lưu cục bộ (Chờ Commit)');
+        } catch {
+          // retry
         }
-      } catch {
-        setSyncStatus('Lưu cục bộ (Chờ kết nối)');
+        await new Promise((r) => setTimeout(r, 400));
       }
+      setSyncStatus('Lưu cục bộ (Bấm Đồng bộ Cloud để thử lại)');
     },
     [role, showToast]
   );
@@ -375,12 +398,15 @@ export default function HorusMealsApp() {
     allocations: MealCostAllocation[];
     attachments: MealAttachment[];
     newGuests: Member[];
+    updatedRecipientMappings?: RecipientVenueMapping[];
     auditAction: string;
     auditSummary: string;
   }) => {
     const nextState: AppState = {
       ...state,
       members: [...state.members, ...payload.newGuests],
+      recipientMappings:
+        payload.updatedRecipientMappings || state.recipientMappings,
       meals: state.meals.some((m) => m.id === payload.meal.id)
         ? state.meals.map((m) =>
             m.id === payload.meal.id ? payload.meal : m
@@ -417,7 +443,12 @@ export default function HorusMealsApp() {
       ],
     };
 
-    persistStateToServer(nextState, payload.auditSummary);
+    persistStateToServer(
+      nextState,
+      payload.auditSummary,
+      false,
+      payload.attachments.map((a) => a.id)
+    );
   };
 
   const handleApproveOrRejectMeal = (
